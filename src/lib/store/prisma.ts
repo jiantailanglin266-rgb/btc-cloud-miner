@@ -14,6 +14,7 @@ import { PrismaClient } from "@prisma/client";
 import type { Store } from "./types";
 import type {
   AiInsight,
+  Alert,
   AuditLog,
   Contract,
   Earning,
@@ -23,6 +24,7 @@ import type {
   MiningProvider,
   Notification,
   Plan,
+  PoolPayout,
   Session,
   SupportTicket,
   SupportMessage,
@@ -184,13 +186,52 @@ function mapContract(r: any): Contract {
     userId: r.userId,
     planId: r.planId,
     planName: r.planName,
+    providerId: r.providerId ?? null,
+    connectionModel: r.connectionModel ?? "PARTNER_FARM",
     hashrateThs: num(r.hashrateThs),
     status: r.status,
     startsAt: isoReq(r.startsAt),
     endsAt: isoReq(r.endsAt),
     autoRenew: r.autoRenew,
     upfrontCostUsd: num(r.upfrontCostUsd),
+    poolFeeRate: num(r.poolFeeRate),
+    platformFeeRate: num(r.platformFeeRate),
+    revenueShareRate: num(r.revenueShareRate),
+    hostingFeeRate: num(r.hostingFeeRate),
+    electricityCostTreatment: r.electricityCostTreatment ?? "INCLUDED",
     createdAt: isoReq(r.createdAt),
+  };
+}
+
+function mapPayout(r: any): PoolPayout {
+  return {
+    id: r.id,
+    tenantId: r.tenantId,
+    providerId: r.providerId,
+    externalPayoutId: r.externalPayoutId,
+    amountBtc: btc(r.amountBtc),
+    paidAt: isoReq(r.paidAt),
+    txId: r.txId,
+    source: r.source,
+    fetchedAt: isoReq(r.fetchedAt),
+    allocationStatus: r.allocationStatus,
+    allocatedAt: iso(r.allocatedAt),
+  };
+}
+
+function mapAlert(r: any): Alert {
+  return {
+    id: r.id,
+    tenantId: r.tenantId,
+    kind: r.kind,
+    severity: r.severity,
+    message: r.message,
+    evidence: jsonObject(r.evidence) as Record<string, number | string>,
+    targetType: r.targetType,
+    targetId: r.targetId,
+    createdAt: isoReq(r.createdAt),
+    acknowledgedAt: iso(r.acknowledgedAt),
+    acknowledgedBy: r.acknowledgedBy,
   };
 }
 
@@ -325,6 +366,8 @@ function mapEarning(r: any): Earning {
     netBtc: btc(r.netBtc),
     hashrateThs: num(r.hashrateThs),
     uptimeRate: num(r.uptimeRate),
+    kind: r.kind ?? "ESTIMATED",
+    payoutId: r.payoutId ?? null,
   };
 }
 
@@ -688,12 +731,19 @@ export async function createPrismaStore(): Promise<Store> {
           userId: contract.userId,
           planId: contract.planId,
           planName: contract.planName,
+          providerId: contract.providerId,
+          connectionModel: contract.connectionModel,
           hashrateThs: contract.hashrateThs,
           status: contract.status,
           startsAt: new Date(contract.startsAt),
           endsAt: new Date(contract.endsAt),
           autoRenew: contract.autoRenew,
           upfrontCostUsd: contract.upfrontCostUsd,
+          poolFeeRate: contract.poolFeeRate,
+          platformFeeRate: contract.platformFeeRate,
+          revenueShareRate: contract.revenueShareRate,
+          hostingFeeRate: contract.hostingFeeRate,
+          electricityCostTreatment: contract.electricityCostTreatment,
           createdAt: new Date(contract.createdAt),
         },
       });
@@ -1049,8 +1099,115 @@ export async function createPrismaStore(): Promise<Store> {
           netBtc: e.netBtc,
           hashrateThs: e.hashrateThs,
           uptimeRate: e.uptimeRate,
+          kind: e.kind,
+          payoutId: e.payoutId,
         })),
         skipDuplicates: true,
+      });
+    },
+
+    // --- Pool Payout -------------------------------------------------------
+    async insertPayout(payout) {
+      try {
+        await prisma.poolPayout.create({
+          data: {
+            id: payout.id,
+            tenantId: payout.tenantId,
+            providerId: payout.providerId,
+            externalPayoutId: payout.externalPayoutId,
+            amountBtc: payout.amountBtc,
+            paidAt: new Date(payout.paidAt),
+            txId: payout.txId,
+            source: payout.source,
+            fetchedAt: new Date(payout.fetchedAt),
+            allocationStatus: payout.allocationStatus,
+            allocatedAt: payout.allocatedAt ? new Date(payout.allocatedAt) : null,
+          },
+        });
+        return true;
+      } catch (err) {
+        if (isUniqueViolation(err)) return false; // 既に取り込み済み（冪等）
+        throw err;
+      }
+    },
+    async listPayouts(tenantId, filter) {
+      return (
+        await prisma.poolPayout.findMany({
+          where: {
+            tenantId,
+            ...(filter?.allocationStatus
+              ? { allocationStatus: filter.allocationStatus }
+              : {}),
+          },
+          orderBy: { paidAt: "desc" },
+          take: filter?.limit ?? 200,
+        })
+      ).map(mapPayout);
+    },
+    async getPayout(tenantId, id) {
+      const r = await prisma.poolPayout.findFirst({ where: { id, tenantId } });
+      return r ? mapPayout(r) : null;
+    },
+    async updatePayout(tenantId, id, patch) {
+      const existing = await prisma.poolPayout.findFirst({ where: { id, tenantId } });
+      if (!existing) return null;
+      const r = await prisma.poolPayout.update({
+        where: { id },
+        data: {
+          ...(patch.allocationStatus !== undefined && {
+            allocationStatus: patch.allocationStatus,
+          }),
+          ...(patch.allocatedAt !== undefined && {
+            allocatedAt: patch.allocatedAt ? new Date(patch.allocatedAt) : null,
+          }),
+        },
+      });
+      return mapPayout(r);
+    },
+
+    // --- 監視アラート -------------------------------------------------------
+    async insertAlert(alert) {
+      const dup = await prisma.alert.findFirst({
+        where: {
+          tenantId: alert.tenantId,
+          kind: alert.kind,
+          targetType: alert.targetType,
+          targetId: alert.targetId,
+          acknowledgedAt: null,
+        },
+      });
+      if (dup) return false;
+      await prisma.alert.create({
+        data: {
+          id: alert.id,
+          tenantId: alert.tenantId,
+          kind: alert.kind,
+          severity: alert.severity,
+          message: alert.message,
+          evidence: alert.evidence as unknown as object,
+          targetType: alert.targetType,
+          targetId: alert.targetId,
+          createdAt: new Date(alert.createdAt),
+        },
+      });
+      return true;
+    },
+    async listAlerts(tenantId, filter) {
+      return (
+        await prisma.alert.findMany({
+          where: {
+            tenantId,
+            ...(filter?.unacknowledgedOnly ? { acknowledgedAt: null } : {}),
+          },
+          orderBy: { createdAt: "desc" },
+          take: filter?.limit ?? 200,
+        })
+      ).map(mapAlert);
+    },
+    async acknowledgeAlert(tenantId, id, userId) {
+      await prisma.alert.updateMany({
+        where: { id, tenantId, acknowledgedAt: null },
+        data: { acknowledgedAt: new Date(), acknowledgedBy: userId },
       });
     },
 

@@ -78,7 +78,14 @@ Browser ── HTTPS/SSE ──▶ Next.js 16 (App Router)
 | [DATABASE.md](./DATABASE.md) | DB 設計（34テーブル・インデックス・RLS・マイグレーション運用） |
 | [API.md](./API.md) | API 設計（全エンドポイント・共通仕様・SSE） |
 | [SECURITY.md](./SECURITY.md) | 脅威モデルと対策・出金セキュリティ・監査 |
+| [MINING_PROVIDER.md](./MINING_PROVIDER.md) | プロバイダー統合（接続モデル3種・実プールアダプタ・追加手順） |
+| [STRATUM.md](./STRATUM.md) | Stratum V1 実装・Backend Gateway・V2 拡張点 |
+| [REVENUE_ENGINE.md](./REVENUE_ENGINE.md) | 推定エンジンと実収益配賦（Estimated/Actual の分離・冪等性） |
+| [LEDGER.md](./LEDGER.md) | 複式元帳（Entry 区分・不変条件） |
+| [WITHDRAWAL.md](./WITHDRAWAL.md) | 出金 3 モード（mock/sandbox/live）と防御 11 層 |
 | [DEPLOYMENT.md](./DEPLOYMENT.md) | デプロイ手順（Docker / クラウド / 環境変数チェックリスト） |
+| [FREE_TIER_DEPLOYMENT.md](./FREE_TIER_DEPLOYMENT.md) | 固定費ほぼ0円の PoC 環境と商用環境の分離 |
+| [PRODUCTION_CHECKLIST.md](./PRODUCTION_CHECKLIST.md) | 本番公開前チェックリスト |
 | [OPERATIONS.md](./OPERATIONS.md) | 運用手順・障害対応ランブック |
 | [docs/](./docs/) | ER図・画面設計・ロードマップ・外部依存・コスト・法規制・マニュアル類 |
 

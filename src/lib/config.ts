@@ -72,7 +72,7 @@ export const config = {
   },
 
   wallet: {
-    /** mock | custody */
+    /** mock | sandbox | live（custody は live の旧名） */
     providerMode: str("WALLET_PROVIDER_MODE", "mock"),
     custodyApiUrl: process.env.CUSTODY_API_URL || null,
     withdrawalEnabled: bool("FEATURE_WITHDRAWAL_ENABLED", true),
@@ -80,6 +80,10 @@ export const config = {
     withdrawalFeeBtc: str("WITHDRAWAL_FEE_BTC", "0.00015"),
     twoApproverThresholdBtc: str("WITHDRAWAL_TWO_APPROVER_THRESHOLD_BTC", "0.01"),
     addressCooldownHours: num("WITHDRAWAL_ADDRESS_COOLDOWN_HOURS", 24),
+    /** 1回あたりの出金上限 */
+    maxPerWithdrawalBtc: str("WITHDRAWAL_MAX_PER_TX_BTC", "0.5"),
+    /** ユーザーあたり24時間の出金上限 */
+    dailyLimitBtc: str("WITHDRAWAL_DAILY_LIMIT_BTC", "1.0"),
   },
 
   fees: {

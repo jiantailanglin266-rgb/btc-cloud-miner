@@ -7,9 +7,11 @@ import {
   Badge,
   Card,
   CardTitle,
+  DataModeBadge,
   DemoNotice,
   EstimateChip,
   KeyValue,
+  LiveConnectionFailed,
   PageHeader,
   Stat,
   StaleNotice,
@@ -25,7 +27,11 @@ import {
   formatCompact,
   formatRelative,
   statusLabel,
+  dataModeOf,
 } from "@/lib/format";
+import { getStore } from "@/lib/store";
+import { config } from "@/lib/config";
+import { addBtc } from "@/lib/decimal";
 import type { SeriesRange } from "@/types";
 
 export const metadata = { title: "ダッシュボード" };
@@ -46,10 +52,12 @@ export default async function DashboardPage(props: {
   const userId = ctx.user.id;
 
   // Server Component から lib/store・modules を直接呼ぶ（自分の API を fetch しない）
-  const [summary, series, entries] = await Promise.all([
+  const store = await getStore();
+  const [summary, series, entries, earnings] = await Promise.all([
     buildDashboardSummary(tenantId, userId),
     buildSeries(tenantId, userId, "hashrate", range),
     getWorkersForUser(tenantId, userId),
+    store.listEarnings(tenantId, userId, Date.now() - 31 * 86_400_000),
   ]);
 
   const insights = sortInsights([
@@ -60,6 +68,27 @@ export default async function DashboardPage(props: {
   const rev = summary.revenue;
   const halving = nextHalving(summary.network);
   const demoData = isMockData(summary.network.freshness) || series.synthesized;
+  const networkMode = dataModeOf(summary.network.freshness);
+  const priceMode = dataModeOf(summary.price.freshness);
+
+  // Actual（実 payout 配賦由来）と Estimated を厳密に分けて集計する
+  const todayStart = new Date().setHours(0, 0, 0, 0);
+  const monthStart = Date.now() - 30 * 86_400_000;
+  const actualEarnings = earnings.filter((e) => e.kind === "ACTUAL");
+  const actualToday = actualEarnings
+    .filter((e) => new Date(e.earnedAt).getTime() >= todayStart)
+    .reduce((a, e) => addBtc(a, e.netBtc), "0.00000000");
+  const actualMonth = actualEarnings
+    .filter((e) => new Date(e.earnedAt).getTime() >= monthStart)
+    .reduce((a, e) => addBtc(a, e.netBtc), "0.00000000");
+  const hasActual = actualEarnings.length > 0;
+
+  // live モード設定なのに、実プロバイダーが 1 つも応答していない場合は明示する
+  const liveProviders = summary.providerStatuses.filter((p) => p.kind !== "MOCK");
+  const liveConnectionFailed =
+    config.mining.providerMode === "live" &&
+    (liveProviders.length === 0 ||
+      liveProviders.every((p) => p.status === "OFFLINE" || p.status === "MAINTENANCE"));
 
   return (
     <>
@@ -68,6 +97,14 @@ export default async function DashboardPage(props: {
         description="契約中のハッシュレートの稼働状況と推定収益"
         action={<RangeSwitch current={range} />}
       />
+
+      {liveConnectionFailed && (
+        <div className="mb-4">
+          <LiveConnectionFailed
+            detail={liveProviders.map((p) => `${p.name}: ${p.status}`).join(" / ")}
+          />
+        </div>
+      )}
 
       {demoData && (
         <div className="mb-4">
@@ -132,7 +169,10 @@ export default async function DashboardPage(props: {
         </Card>
 
         <Card>
-          <CardTitle hint={`取得元: ${summary.network.freshness.source}`}>
+          <CardTitle
+            hint={`取得元: ${summary.network.freshness.source}`}
+            action={<DataModeBadge mode={networkMode} />}
+          >
             Bitcoin ネットワーク
           </CardTitle>
           <div className="divide-y divide-line">
@@ -154,7 +194,7 @@ export default async function DashboardPage(props: {
               value={`${summary.network.blocksUntilAdjustment.toLocaleString()} ブロック後（${formatPercent(summary.network.estimatedAdjustmentRate, 2)}）`}
             />
             <KeyValue
-              label="BTC Price"
+              label={`BTC Price（${priceMode}）`}
               value={formatUsd(summary.price.usd, 0)}
               tone={summary.price.change24hRate >= 0 ? "pos" : "neg"}
             />
@@ -177,16 +217,41 @@ export default async function DashboardPage(props: {
             推定収益（1日あたり）
           </CardTitle>
 
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+          {/* Actual（実払い出し）と Estimated（推定）を並べ、絶対に混同させない */}
+          <div className="mb-4 grid grid-cols-2 gap-3 rounded-xl border border-line bg-white/2 p-3 sm:grid-cols-4">
             <MiniFigure
-              label="Est. BTC / Day"
-              value={rev.estimatedBtcPerDay.toFixed(8)}
-              sub={formatUsd(rev.grossRevenueUsdPerDay)}
+              label="Actual BTC Today（実績）"
+              value={hasActual ? Number(actualToday).toFixed(8) : "—"}
+              sub={hasActual ? formatUsd(Number(actualToday) * summary.price.usd) : "実払い出しなし"}
+              tone={hasActual ? "pos" : undefined}
             />
             <MiniFigure
-              label="Est. BTC / Month"
+              label="Actual BTC Month（実績）"
+              value={hasActual ? Number(actualMonth).toFixed(8) : "—"}
+              sub={
+                hasActual
+                  ? formatUsd(Number(actualMonth) * summary.price.usd)
+                  : "プール payout の配賦後に表示されます"
+              }
+              tone={hasActual ? "pos" : undefined}
+            />
+            <MiniFigure
+              label="Est. BTC Today（推定）"
+              value={rev.estimatedBtcPerDay.toFixed(8)}
+              sub="現在の難易度・価格での試算"
+            />
+            <MiniFigure
+              label="Est. BTC Month（推定）"
               value={rev.estimatedBtcPerMonth.toFixed(8)}
-              sub={formatUsd(rev.grossRevenueUsdPerDay * 30)}
+              sub="保証ではありません"
+            />
+          </div>
+
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+            <MiniFigure
+              label="Gross Revenue / Day"
+              value={formatUsd(rev.grossRevenueUsdPerDay)}
+              sub={`${rev.estimatedBtcPerDay.toFixed(8)} BTC`}
             />
             <MiniFigure
               label="Net Revenue / Day"

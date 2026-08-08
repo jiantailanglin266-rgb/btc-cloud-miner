@@ -12,6 +12,7 @@
 
 import type {
   AiInsight,
+  Alert,
   AuditLog,
   Contract,
   Earning,
@@ -21,6 +22,7 @@ import type {
   MiningProvider,
   Notification,
   Plan,
+  PoolPayout,
   Session,
   SupportTicket,
   Tenant,
@@ -145,6 +147,31 @@ export type Store = {
     fromMs?: number,
   ): Promise<Earning[]>;
   createEarnings(tenantId: string, earnings: Earning[]): Promise<void>;
+
+  // --- Pool Payout（実払い出し） -------------------------------------------
+  /**
+   * payout を保存する。(providerId, externalPayoutId) が既存なら false（冪等）。
+   */
+  insertPayout(payout: PoolPayout): Promise<boolean>;
+  listPayouts(
+    tenantId: string,
+    filter?: { allocationStatus?: PoolPayout["allocationStatus"]; limit?: number },
+  ): Promise<PoolPayout[]>;
+  getPayout(tenantId: string, id: string): Promise<PoolPayout | null>;
+  updatePayout(
+    tenantId: string,
+    id: string,
+    patch: Partial<PoolPayout>,
+  ): Promise<PoolPayout | null>;
+
+  // --- 監視アラート ---------------------------------------------------------
+  /** 同種・同対象の未確認アラートが既にあれば重複作成しない。作成したら true */
+  insertAlert(alert: Alert): Promise<boolean>;
+  listAlerts(
+    tenantId: string,
+    filter?: { unacknowledgedOnly?: boolean; limit?: number },
+  ): Promise<Alert[]>;
+  acknowledgeAlert(tenantId: string, id: string, userId: string): Promise<void>;
 
   // --- 通知・サポート・障害 -----------------------------------------------
   listNotifications(tenantId: string, userId: string): Promise<Notification[]>;

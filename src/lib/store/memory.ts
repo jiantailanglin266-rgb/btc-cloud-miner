@@ -13,6 +13,7 @@
 import type { Store } from "./types";
 import type {
   AiInsight,
+  Alert,
   AuditLog,
   Contract,
   Earning,
@@ -22,6 +23,7 @@ import type {
   MiningProvider,
   Notification,
   Plan,
+  PoolPayout,
   Session,
   SupportTicket,
   Tenant,
@@ -80,6 +82,8 @@ type Db = {
   incidents: Incident[];
   auditLogs: AuditLog[];
   insights: AiInsight[];
+  payouts: PoolPayout[];
+  alerts: Alert[];
 };
 
 const DEFAULT_TENANT_ID = "tenant-default";
@@ -127,6 +131,8 @@ function buildSeed(): Db {
     incidents: [],
     auditLogs: [],
     insights: [],
+    payouts: [],
+    alerts: [],
   };
 
   // --- テナント ------------------------------------------------------------
@@ -304,12 +310,19 @@ function buildSeed(): Db {
     userId: demoUser.id,
     planId: "plan-standard",
     planName: "Standard",
+    providerId: "provider-mock-01",
+    connectionModel: "PARTNER_FARM",
     hashrateThs: config.mining.mockHashrateThs,
     status: "ACTIVE",
     startsAt: iso(now - 120 * day),
     endsAt: iso(now + 245 * day),
     autoRenew: true,
     upfrontCostUsd: 3000,
+    poolFeeRate: 0.02,
+    platformFeeRate: 0.02,
+    revenueShareRate: 0,
+    hostingFeeRate: 0,
+    electricityCostTreatment: "INCLUDED",
     createdAt: iso(now - 120 * day),
   };
   db.contracts.push(contract);
@@ -442,6 +455,10 @@ function buildSeed(): Db {
       netBtc: net,
       hashrateThs: contract.hashrateThs * (0.97 + rnd() * 0.05),
       uptimeRate: 0.97 + rnd() * 0.029,
+      // デモ seed は疑似的な「確定」履歴だが、実プール payout 由来ではないため
+      // ESTIMATED とし、実収益（ACTUAL）と絶対に混同させない
+      kind: "ESTIMATED",
+      payoutId: null,
     });
 
     db.ledger.push({
@@ -1102,6 +1119,65 @@ export const memoryStore: Store = {
   async replaceInsights(tenantId, insights) {
     db.insights = db.insights.filter((i) => i.tenantId !== tenantId);
     db.insights.push(...insights);
+  },
+
+  // --- Pool Payout ---------------------------------------------------------
+  async insertPayout(payout) {
+    const dup = db.payouts.some(
+      (p) =>
+        p.providerId === payout.providerId &&
+        p.externalPayoutId === payout.externalPayoutId,
+    );
+    if (dup) return false;
+    db.payouts.push(payout);
+    return true;
+  },
+  async listPayouts(tenantId, filter) {
+    let list = db.payouts.filter((p) => p.tenantId === tenantId);
+    if (filter?.allocationStatus) {
+      list = list.filter((p) => p.allocationStatus === filter.allocationStatus);
+    }
+    list = [...list].sort((a, b) => b.paidAt.localeCompare(a.paidAt));
+    return clone(filter?.limit ? list.slice(0, filter.limit) : list);
+  },
+  async getPayout(tenantId, id) {
+    return clone(db.payouts.find((p) => p.tenantId === tenantId && p.id === id) ?? null);
+  },
+  async updatePayout(tenantId, id, patch) {
+    const i = db.payouts.findIndex((p) => p.tenantId === tenantId && p.id === id);
+    if (i === -1) return null;
+    db.payouts[i] = { ...db.payouts[i], ...patch, id, tenantId };
+    return clone(db.payouts[i]);
+  },
+
+  // --- 監視アラート ---------------------------------------------------------
+  async insertAlert(alert) {
+    // 同種・同対象の未確認アラートがあれば重複させない（アラート疲れの防止）
+    const dup = db.alerts.some(
+      (a) =>
+        a.tenantId === alert.tenantId &&
+        a.kind === alert.kind &&
+        a.targetType === alert.targetType &&
+        a.targetId === alert.targetId &&
+        !a.acknowledgedAt,
+    );
+    if (dup) return false;
+    db.alerts.push(alert);
+    if (db.alerts.length > 2000) db.alerts.splice(0, db.alerts.length - 2000);
+    return true;
+  },
+  async listAlerts(tenantId, filter) {
+    let list = db.alerts.filter((a) => a.tenantId === tenantId);
+    if (filter?.unacknowledgedOnly) list = list.filter((a) => !a.acknowledgedAt);
+    list = [...list].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    return clone(filter?.limit ? list.slice(0, filter.limit) : list);
+  },
+  async acknowledgeAlert(tenantId, id, userId) {
+    const a = db.alerts.find((x) => x.tenantId === tenantId && x.id === id);
+    if (a && !a.acknowledgedAt) {
+      a.acknowledgedAt = new Date().toISOString();
+      a.acknowledgedBy = userId;
+    }
   },
 };
 

@@ -13,6 +13,9 @@ import type {
 } from "@/types";
 import type { WalletProvider } from "./interface";
 import { MockWalletProvider } from "./providers/mock-custodian";
+import { SandboxWalletProvider } from "./providers/sandbox-custodian";
+import { raiseAlert, detectWithdrawalAnomaly } from "@/modules/monitoring/alerts";
+import { addBtc as addBtcAmount } from "@/lib/decimal";
 import {
   getBalance,
   lockForWithdrawal,
@@ -33,17 +36,28 @@ export class WithdrawalError extends Error {}
 
 let providerInstance: WalletProvider | null = null;
 
+/**
+ * 出金モード（フェーズ9）:
+ *   mock    → 実送金なし・即時確認（デモ）
+ *   sandbox → 実送金なし・testnet アドレスのみ・失敗モードを再現（本番前リハーサル）
+ *   live    → 外部カストディ経由の実送金。カストディ実装が無ければ起動時に明示的に失敗する
+ */
 export function getWalletProvider(): WalletProvider {
   if (providerInstance) return providerInstance;
 
   switch (config.wallet.providerMode) {
-    case "custody":
+    case "live":
+    case "custody": // 旧名（後方互換）
       // 実装時はここで CustodyWalletProvider を返す。
-      // 未実装の状態で本番に出ないよう、明示的に失敗させる。
+      // 未実装の状態で本番に出ないよう、明示的に失敗させる（黙って mock に落とさない）。
       throw new WithdrawalError(
-        "WALLET_PROVIDER_MODE=custody が指定されていますが、カストディ実装がありません。" +
-          "src/modules/wallet/providers/custody.ts を実装し、ここで返してください。",
+        `WALLET_PROVIDER_MODE=${config.wallet.providerMode} が指定されていますが、カストディ実装がありません。` +
+          "src/modules/wallet/providers/custody.ts に WalletProvider を実装し、ここで返してください。" +
+          "秘密鍵はアプリケーションに置かず、署名は必ずカストディ/HSM 側で行うこと。",
       );
+    case "sandbox":
+      providerInstance = new SandboxWalletProvider();
+      return providerInstance;
     case "mock":
     default:
       providerInstance = new MockWalletProvider();
@@ -114,6 +128,35 @@ export async function requestWithdrawal(params: {
     throw new WithdrawalError(
       `最低出金額は ${settings.minWithdrawalBtc} BTC です`,
     );
+  }
+
+  // ⑦-2 1回あたり上限（Amount Limit）
+  if (cmpBtc(params.amountBtc, config.wallet.maxPerWithdrawalBtc) > 0) {
+    throw new WithdrawalError(
+      `1回の出金上限は ${config.wallet.maxPerWithdrawalBtc} BTC です`,
+    );
+  }
+
+  // ⑦-3 日次上限（Daily Limit）: 過去24時間の申請合計（取消・却下を除く）+ 今回分
+  {
+    const dayAgo = Date.now() - 24 * 3600_000;
+    const recent = await store.listWithdrawals(user.tenantId, { userId: user.id });
+    const countedStatuses = new Set([
+      "PENDING_REVIEW", "FLAGGED", "APPROVED", "BROADCASTING", "BROADCASTED", "CONFIRMED",
+    ]);
+    let daySum = "0.00000000";
+    for (const w of recent) {
+      if (new Date(w.createdAt).getTime() < dayAgo) continue;
+      if (!countedStatuses.has(w.status)) continue;
+      daySum = addBtcAmount(daySum, w.amountBtc);
+    }
+    const projected = addBtcAmount(daySum, params.amountBtc);
+    if (cmpBtc(projected, config.wallet.dailyLimitBtc) > 0) {
+      throw new WithdrawalError(
+        `24時間の出金上限（${config.wallet.dailyLimitBtc} BTC）を超えます` +
+          `（本日の申請済み合計 ${daySum} BTC）`,
+      );
+    }
   }
   const feeBtc = settings.withdrawalFeeBtc;
   if (cmpBtc(params.amountBtc, feeBtc) <= 0) {
@@ -191,6 +234,10 @@ export async function requestWithdrawal(params: {
   };
 
   await store.createWithdrawal(withdrawal);
+
+  // 高リスク出金は監視アラートにも記録する（管理者が見落とさないように）
+  const anomaly = detectWithdrawalAnomaly(withdrawal);
+  if (anomaly) await raiseAlert(user.tenantId, anomaly);
 
   await audit({
     tenantId: user.tenantId,
@@ -389,7 +436,8 @@ export async function broadcastWithdrawal(
       tenantId,
       userId: wd.userId,
       withdrawalId: wd.id,
-      amountBtc: wd.amountBtc,
+      netBtc: wd.netBtc,
+      feeBtc: wd.feeBtc,
       txId: result.txId,
     });
 

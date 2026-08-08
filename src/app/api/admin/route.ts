@@ -19,6 +19,12 @@ import {
 } from "@/modules/auth/rbac";
 import { approveWithdrawal, rejectWithdrawal, WithdrawalError } from "@/modules/wallet";
 import { persistSnapshots } from "@/modules/mining/aggregate";
+import { syncPayouts } from "@/modules/provider/registry";
+import {
+  allocatePayoutToUsers,
+  allocateAllPending,
+  AllocationError,
+} from "@/modules/revenue/allocation";
 import { verifyTotp } from "@/modules/auth/totp";
 import { decryptField, newId } from "@/lib/crypto";
 import {
@@ -236,6 +242,48 @@ export const POST = handler(async (req: Request) => {
         ip,
       });
       return ok({ settings: updated });
+    }
+
+    // --- payout の同期（実プールから払い出し履歴を取り込む） ----------------
+    case "sync-payouts": {
+      const result = await syncPayouts(ctx.tenant.id);
+      await audit({
+        tenantId: ctx.tenant.id,
+        actorUserId: ctx.user.id,
+        actorEmail: ctx.user.email,
+        actorRole: ctx.user.role,
+        action: "revenue.sync_payouts",
+        targetType: "payout",
+        targetId: "all",
+        detail: result,
+        ip,
+      });
+      return ok(result);
+    }
+
+    // --- 配賦の実行 ----------------------------------------------------------
+    case "allocate-payout": {
+      const id = typeof body.payoutId === "string" ? body.payoutId : null;
+      const actor = { userId: ctx.user.id, email: ctx.user.email, role: ctx.user.role };
+      try {
+        if (id) {
+          const result = await allocatePayoutToUsers(ctx.tenant.id, id, actor);
+          return ok(result);
+        }
+        const result = await allocateAllPending(ctx.tenant.id, actor);
+        return ok(result);
+      } catch (err) {
+        if (err instanceof AllocationError) return unprocessable(err.message);
+        throw err;
+      }
+    }
+
+    // --- アラートの確認 ------------------------------------------------------
+    case "acknowledge-alert": {
+      const id = typeof body.alertId === "string" ? body.alertId : null;
+      if (!id) return validationError([{ path: "alertId", message: "必須です" }]);
+      await store.acknowledgeAlert(ctx.tenant.id, id, ctx.user.id);
+      return ok({ acknowledged: true });
     }
 
     // --- 障害情報の作成 ----------------------------------------------------

@@ -16,11 +16,12 @@
  * UI には必ず DEMO バッジを出し、実データと誤認させないこと。
  */
 
-import type { MiningProvider, ProviderWorkerReading, Worker } from "@/types";
+import type { MiningProvider, PoolBalance, ProviderWorkerReading, Worker } from "@/types";
 import type {
   MiningProviderAdapter,
   ProviderFetchResult,
   ProviderHealthResult,
+  RawPayout,
 } from "../interface";
 
 /** 決定的ハッシュ（文字列 → 0〜1 の数値） */
@@ -178,6 +179,49 @@ export class MockMiningProviderAdapter implements MiningProviderAdapter {
       status: "ONLINE",
       latencyMs: 12,
       message: "デモプロバイダー（実際のハッシュ計算は行っていません）",
+    };
+  }
+
+  /**
+   * デモ用の payout 履歴（★実データではない）。
+   * 「プールが日次で払い出す」動きを決定的に再現し、配賦フローの動作確認に使う。
+   * externalPayoutId は日付ベースで決定的 → 何度同期しても二重計上されない（冪等確認にも使える）。
+   */
+  async getPayoutHistory(sinceMs?: number): Promise<RawPayout[]> {
+    const out: RawPayout[] = [];
+    const now = Date.now();
+    const from = sinceMs ?? now - 14 * 86_400_000;
+    const totalRated = this.specs.reduce((s, w) => s + w.ratedHashrateThs, 0);
+
+    // 日次 payout。00:30 UTC に前日分が払い出される想定
+    for (let t = Math.ceil(from / 86_400_000) * 86_400_000; t <= now; t += 86_400_000) {
+      const paidAt = t + 30 * 60_000;
+      if (paidAt > now) break;
+      const day = new Date(t).toISOString().slice(0, 10);
+      // 500TH/s ≈ 0.000245 BTC/day を定格比で按分し、日ごとに ±6% 揺らす
+      const noise = 0.94 + hash01(`${this.id}:payout:${day}`) * 0.12;
+      const amount = (totalRated / 500) * 0.000245 * noise;
+      if (amount <= 0) continue;
+      out.push({
+        externalPayoutId: `${this.id}:${day}`,
+        amountBtc: amount.toFixed(8),
+        paidAt: new Date(paidAt).toISOString(),
+        txId: null,
+      });
+    }
+    return out;
+  }
+
+  async getPoolBalance(): Promise<PoolBalance> {
+    const payouts = await this.getPayoutHistory(Date.now() - 86_400_000);
+    const unpaid = payouts.length > 0 ? 0 : (this.specs.reduce((s, w) => s + w.ratedHashrateThs, 0) / 500) * 0.000245 * 0.6;
+    return {
+      unpaidBtc: unpaid.toFixed(8),
+      paidBtc: "0.02940000",
+      source: `mock:${this.name}`,
+      fetchedAt: new Date().toISOString(),
+      isEstimate: false,
+      isStale: false,
     };
   }
 

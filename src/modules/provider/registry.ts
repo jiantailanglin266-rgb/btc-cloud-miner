@@ -15,11 +15,16 @@ import type {
   Worker,
 } from "@/types";
 import type { MiningProviderAdapter } from "./interface";
+import { ProviderFacade } from "./interface";
 import { MockMiningProviderAdapter } from "./adapters/mock";
 import { PoolRestAdapter } from "./adapters/pool-rest";
 import { StratumAdapter } from "./adapters/stratum";
 import { ProviderAAdapter } from "./adapters/provider-a";
 import { ProviderBAdapter } from "./adapters/provider-b";
+import { BraiinsPoolAdapter } from "./adapters/braiins";
+import { F2PoolAdapter } from "./adapters/f2pool";
+import { GenericMiningFarmAdapter } from "./adapters/farm-generic";
+import { CustomerOwnedMinerAdapter } from "./adapters/customer-owned";
 import { getBreaker, CircuitOpenError } from "@/lib/circuit-breaker";
 import { getStore } from "@/lib/store";
 import { config } from "@/lib/config";
@@ -42,6 +47,14 @@ export function createAdapter(
       return new ProviderAAdapter(provider);
     case "PROVIDER_B":
       return new ProviderBAdapter(provider);
+    case "BRAIINS":
+      return new BraiinsPoolAdapter(provider);
+    case "F2POOL":
+      return new F2PoolAdapter(provider);
+    case "FARM_GENERIC":
+      return new GenericMiningFarmAdapter(provider);
+    case "CUSTOMER_OWNED":
+      return new CustomerOwnedMinerAdapter(provider);
     default: {
       // 網羅性チェック（新しい kind を足したときにコンパイルエラーで気付ける）
       const never: never = provider.kind;
@@ -196,6 +209,78 @@ export async function getProviderHealth(tenantId: string): Promise<ProviderHealt
       }
     }),
   );
+}
+
+/**
+ * 統一 12 メソッド面（ProviderFacade）でアダプタを取得する。
+ * getHashrate / getAcceptedShares / getPayoutHistory 等はこちらを使う。
+ */
+export async function getFacade(
+  tenantId: string,
+  providerId: string,
+): Promise<ProviderFacade | null> {
+  const store = await getStore();
+  const provider = await store.getProvider(tenantId, providerId);
+  if (!provider) return null;
+  const workers = await store.listWorkers(tenantId, { providerId });
+  return new ProviderFacade(createAdapter(provider, workers));
+}
+
+/**
+ * 全プロバイダーから payout 履歴を取り込み、未保存分を PoolPayout として保存する。
+ * ★ 冪等: UNIQUE(providerId, externalPayoutId) 相当のチェックで二重保存しない。
+ * 戻り値は新規保存件数と、対応プロバイダーが 1 つも無かったかどうか。
+ */
+export async function syncPayouts(
+  tenantId: string,
+  sinceMs?: number,
+): Promise<{ saved: number; skippedDuplicates: number; capableProviders: number }> {
+  const store = await getStore();
+  const providers = (await store.listProviders(tenantId)).filter((p) => p.enabled);
+  const workers = await store.listWorkers(tenantId);
+
+  let saved = 0;
+  let skippedDuplicates = 0;
+  let capableProviders = 0;
+
+  for (const provider of providers) {
+    let adapter: MiningProviderAdapter;
+    try {
+      adapter = createAdapter(provider, workers);
+    } catch {
+      continue;
+    }
+    if (!adapter.getPayoutHistory) continue;
+    capableProviders++;
+
+    try {
+      const raw = await breakerFor(provider).run(() => adapter.getPayoutHistory!(sinceMs));
+      for (const p of raw) {
+        const inserted = await store.insertPayout({
+          id: `po-${provider.id}-${p.externalPayoutId}`.replace(/[^a-zA-Z0-9_-]/g, "_"),
+          tenantId,
+          providerId: provider.id,
+          externalPayoutId: p.externalPayoutId,
+          amountBtc: p.amountBtc,
+          paidAt: p.paidAt,
+          txId: p.txId,
+          source: adapter.isLive ? adapter.name : `mock:${adapter.name}`,
+          fetchedAt: new Date().toISOString(),
+          allocationStatus: "UNALLOCATED",
+          allocatedAt: null,
+        });
+        if (inserted) saved++;
+        else skippedDuplicates++;
+      }
+    } catch (err) {
+      console.warn(
+        `[payout] ${provider.name} の payout 取得に失敗しました:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
+
+  return { saved, skippedDuplicates, capableProviders };
 }
 
 /**

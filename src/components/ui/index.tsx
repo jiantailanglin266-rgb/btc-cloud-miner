@@ -230,6 +230,42 @@ export function StaleNotice({
   );
 }
 
+/**
+ * データ出所バッジ（フェーズ11要件）。
+ * LIVE = 実データ / STALE = 実データだが古い / MOCK = 擬似データ。
+ * 外部由来の数値カードには必ず付ける。
+ */
+export function DataModeBadge({ mode }: { mode: "LIVE" | "STALE" | "MOCK" }) {
+  const tone = mode === "LIVE" ? "online" : mode === "STALE" ? "degraded" : "demo";
+  const title =
+    mode === "LIVE"
+      ? "実データソースから取得した最新の値です"
+      : mode === "STALE"
+        ? "実データソースの取得に失敗したため、古いキャッシュを表示しています"
+        : "デモ用の擬似データです。実際の設備・市場の値ではありません";
+  return (
+    <span title={title}>
+      <Badge tone={tone} dot>
+        {mode}
+      </Badge>
+    </span>
+  );
+}
+
+/** LIVE モード設定なのに実プロバイダーへ接続できていない場合の警告（フェーズ18） */
+export function LiveConnectionFailed({ detail }: { detail?: string }) {
+  return (
+    <div className="rounded-xl border border-neg/50 bg-neg/15 px-4 py-3">
+      <div className="text-sm font-semibold text-neg">LIVE CONNECTION FAILED</div>
+      <p className="mt-1 text-xs leading-relaxed text-ink-muted">
+        MINING_PROVIDER_MODE=live が設定されていますが、実プロバイダーへ接続できていません。
+        表示中の値は実データではありません（勝手に実データ扱いはしません）。
+        {detail && <span className="mt-1 block text-ink-dim">{detail}</span>}
+      </p>
+    </div>
+  );
+}
+
 /** デモデータであることの明示。本番で出てはいけない */
 export function DemoNotice({ children }: { children?: ReactNode }) {
   return (

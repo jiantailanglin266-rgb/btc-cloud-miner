@@ -157,18 +157,43 @@ export type ContractStatus =
   | "CANCELLED"
   | "SUSPENDED";
 
+/**
+ * 接続モデル（本SaaS事業者は ASIC を所有しない）:
+ *   PARTNER_FARM      = 提携マイニングファームの ASIC を接続
+ *   CUSTOMER_OWNED    = 顧客自身が保有する ASIC を接続
+ *   HASHRATE_PROVIDER = 外部ハッシュレートプロバイダーを接続
+ */
+export type ConnectionModel = "PARTNER_FARM" | "CUSTOMER_OWNED" | "HASHRATE_PROVIDER";
+
+/**
+ * 電力コストの扱い:
+ *   INCLUDED     = プロバイダー価格に込み（ユーザーに別途請求しない）
+ *   PASS_THROUGH = 実費をユーザーへ転嫁（配賦時に控除）
+ *   USER_PAYS    = 顧客保有 ASIC 等でユーザーが直接支払う（本システムは関与しない）
+ */
+export type ElectricityCostTreatment = "INCLUDED" | "PASS_THROUGH" | "USER_PAYS";
+
 export type Contract = {
   id: string;
   tenantId: string;
   userId: string;
   planId: string;
   planName: string;
+  providerId: string | null;
+  connectionModel: ConnectionModel;
   hashrateThs: number;
   status: ContractStatus;
   startsAt: ISODateString;
   endsAt: ISODateString;
   autoRenew: boolean;
   upfrontCostUsd: number;
+  poolFeeRate: number;
+  platformFeeRate: number;
+  /** 実報酬からのレベニューシェア率（配賦時に platformFee とは別枠で控除） */
+  revenueShareRate: number;
+  /** ホスティング費率（PARTNER_FARM で PASS_THROUGH のときに使用） */
+  hostingFeeRate: number;
+  electricityCostTreatment: ElectricityCostTreatment;
   createdAt: ISODateString;
 };
 
@@ -191,7 +216,61 @@ export type ProviderKind =
   | "POOL_REST"
   | "STRATUM"
   | "PROVIDER_A"
-  | "PROVIDER_B";
+  | "PROVIDER_B"
+  | "BRAIINS"
+  | "F2POOL"
+  | "FARM_GENERIC"
+  | "CUSTOMER_OWNED";
+
+/**
+ * データの出所種別。UI で必ず表示する（LIVE / STALE / MOCK の誤認防止）。
+ *   LIVE  = 実データソースから直近に取得した値
+ *   STALE = 実データソースだが取得に失敗し、古いキャッシュを表示している
+ *   MOCK  = デモ用の擬似データ（実データではない）
+ */
+export type DataMode = "LIVE" | "STALE" | "MOCK";
+
+/**
+ * 出所情報付きの値。外部から取得した数値には必ずこれを付ける。
+ * 「どこから・いつ・推定か・古いか」を UI まで運ぶための封筒。
+ */
+export type SourcedValue<T> = {
+  value: T;
+  source: string;
+  fetchedAt: ISODateString;
+  isEstimate: boolean;
+  isStale: boolean;
+};
+
+/** プール側の残高（未払い・支払済み） */
+export type PoolBalance = {
+  unpaidBtc: BtcAmount;
+  paidBtc: BtcAmount;
+  source: string;
+  fetchedAt: ISODateString;
+  isEstimate: boolean;
+  isStale: boolean;
+};
+
+/**
+ * プールからの実払い出し（Actual Revenue の源泉）。
+ * 推定値とは絶対に混同しない。externalPayoutId が冪等キーの素材になる。
+ */
+export type PoolPayout = {
+  id: string;
+  tenantId: string;
+  providerId: string;
+  /** プール側の払い出し識別子（txid や payout id）。UNIQUE(providerId, externalPayoutId) */
+  externalPayoutId: string;
+  amountBtc: BtcAmount;
+  paidAt: ISODateString;
+  txId: string | null;
+  source: string;
+  fetchedAt: ISODateString;
+  /** UNALLOCATED = 未配賦 / ALLOCATED = ユーザーへ配賦済み */
+  allocationStatus: "UNALLOCATED" | "ALLOCATED";
+  allocatedAt: ISODateString | null;
+};
 
 export type ProviderStatus = "ONLINE" | "DEGRADED" | "OFFLINE" | "MAINTENANCE";
 
@@ -369,10 +448,14 @@ export type SensitivityResult = {
 
 export type LedgerEntryType =
   | "MINING_REWARD"
-  | "FEE"
+  | "POOL_FEE"
+  | "PLATFORM_FEE"
+  | "HOSTING_FEE"
+  | "FEE" // 旧汎用区分（後方互換のため残す。新規は上の個別区分を使う）
   | "WITHDRAWAL_LOCK"
   | "WITHDRAWAL_SETTLE"
   | "WITHDRAWAL_REVERSE"
+  | "WITHDRAWAL_FEE"
   | "ADJUSTMENT";
 
 export type LedgerBucket = "AVAILABLE" | "LOCKED";
@@ -472,6 +555,46 @@ export type Earning = {
   netBtc: BtcAmount;
   hashrateThs: number;
   uptimeRate: number;
+  /**
+   * この報酬の性質。
+   *   ACTUAL    = プールの実払い出し（PoolPayout）を配賦した確定値
+   *   ESTIMATED = 推定値（デモ・暫定表示用）。実収益と混同してはならない
+   */
+  kind: "ACTUAL" | "ESTIMATED";
+  /** ACTUAL の場合、元になった payout の ID */
+  payoutId: string | null;
+};
+
+// ---------------------------------------------------------------------------
+// 監視アラート
+// ---------------------------------------------------------------------------
+
+export type AlertKind =
+  | "HASHRATE_SUDDEN_DROP"
+  | "WORKER_OFFLINE"
+  | "REJECT_RATE_SPIKE"
+  | "POOL_API_UNAVAILABLE"
+  | "STRATUM_DISCONNECT"
+  | "REVENUE_ANOMALY"
+  | "UNEXPECTED_PAYOUT"
+  | "WITHDRAWAL_ANOMALY"
+  | "DUPLICATE_PAYOUT"
+  | "LEDGER_IMBALANCE"
+  | "LIVE_CONNECTION_FAILED";
+
+export type Alert = {
+  id: string;
+  tenantId: string;
+  kind: AlertKind;
+  severity: "WARNING" | "CRITICAL";
+  message: string;
+  /** 判断根拠の数値（人が検算できる形で必ず残す） */
+  evidence: Record<string, number | string>;
+  targetType: string;
+  targetId: string;
+  createdAt: ISODateString;
+  acknowledgedAt: ISODateString | null;
+  acknowledgedBy: string | null;
 };
 
 // ---------------------------------------------------------------------------

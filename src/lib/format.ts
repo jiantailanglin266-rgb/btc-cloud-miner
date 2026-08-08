@@ -114,3 +114,16 @@ export const STATUS_LABEL_JA: Record<string, string> = {
 export function statusLabel(status: string): string {
   return STATUS_LABEL_JA[status] ?? status;
 }
+
+/**
+ * freshness → データ出所種別（LIVE / STALE / MOCK）。
+ * UI で必ず表示し、Mock データを実データと誤認させない（フェーズ11要件）。
+ */
+export function dataModeOf(freshness: {
+  source: string;
+  stale: boolean;
+}): "LIVE" | "STALE" | "MOCK" {
+  if (freshness.source.startsWith("mock")) return "MOCK";
+  if (freshness.stale) return "STALE";
+  return "LIVE";
+}

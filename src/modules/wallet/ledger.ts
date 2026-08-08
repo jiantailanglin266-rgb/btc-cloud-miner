@@ -177,29 +177,50 @@ export async function releaseWithdrawalLock(params: {
   ]);
 }
 
-/** 送金完了: LOCKED から確定的に引き落とす */
+/**
+ * 送金完了: LOCKED から確定的に引き落とす。
+ * 送金額（net）と出金手数料（fee）を別区分で記帳する（会計上の透明性のため）。
+ * net + fee = ロックしていた amount と一致すること。
+ */
 export async function settleWithdrawal(params: {
   tenantId: string;
   userId: string;
   withdrawalId: string;
-  amountBtc: string;
+  netBtc: string;
+  feeBtc: string;
   txId: string;
 }): Promise<void> {
   const store = await getStore();
   const account = await store.getWalletAccount(params.tenantId, params.userId);
+  const ref = { type: "withdrawal", id: params.withdrawalId };
 
-  await store.appendLedger(params.tenantId, [
+  const entries: LedgerEntry[] = [
     entry(
       params.tenantId,
       account.id,
       "WITHDRAWAL_SETTLE",
       "LOCKED",
-      negateBtc(params.amountBtc),
-      { type: "withdrawal", id: params.withdrawalId },
+      negateBtc(params.netBtc),
+      ref,
       `wd:${params.withdrawalId}:settle`,
       `送金完了（tx: ${params.txId.slice(0, 16)}…）`,
     ),
-  ]);
+  ];
+  if (toSat(params.feeBtc) > 0n) {
+    entries.push(
+      entry(
+        params.tenantId,
+        account.id,
+        "WITHDRAWAL_FEE",
+        "LOCKED",
+        negateBtc(params.feeBtc),
+        ref,
+        `wd:${params.withdrawalId}:fee`,
+        "出金手数料",
+      ),
+    );
+  }
+  await store.appendLedger(params.tenantId, entries);
 }
 
 /** マイニング報酬の計上 */

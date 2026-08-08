@@ -182,6 +182,10 @@ model Contract {
   userId         String
   planId         String
   planName       String
+  /// 接続先プロバイダー（配賦時の按分対象の特定に使う）
+  providerId     String?
+  /// PARTNER_FARM | CUSTOMER_OWNED | HASHRATE_PROVIDER
+  connectionModel String  @default("PARTNER_FARM")
   hashrateThs    Decimal  @db.Decimal(14, 4)
   /// PENDING_PAYMENT | ACTIVE | EXPIRED | CANCELLED | SUSPENDED
   status         String   @default("PENDING_PAYMENT")
@@ -189,6 +193,13 @@ model Contract {
   endsAt         DateTime
   autoRenew      Boolean  @default(false)
   upfrontCostUsd Decimal  @db.Decimal(14, 2) @default(0)
+  poolFeeRate     Decimal @db.Decimal(6, 5) @default(0.02)
+  platformFeeRate Decimal @db.Decimal(6, 5) @default(0.02)
+  /// 実報酬からのレベニューシェア率
+  revenueShareRate Decimal @db.Decimal(6, 5) @default(0)
+  hostingFeeRate   Decimal @db.Decimal(6, 5) @default(0)
+  /// INCLUDED | PASS_THROUGH | USER_PAYS
+  electricityCostTreatment String @default("INCLUDED")
   createdAt      DateTime @default(now())
 
   user        User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -398,12 +409,62 @@ model Earning {
   netBtc           Decimal  @db.Decimal(18, 8)
   hashrateThs      Decimal  @db.Decimal(14, 4)
   uptimeRate       Decimal  @db.Decimal(6, 5)
+  /// ACTUAL = 実 payout 配賦由来 | ESTIMATED = 推定。絶対に混同しない
+  kind             String   @default("ESTIMATED")
+  /// ACTUAL の場合、元になった PoolPayout の id
+  payoutId         String?
 
   user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   contract Contract @relation(fields: [contractId], references: [id], onDelete: Cascade)
 
   @@index([tenantId, userId, earnedAt])
+  @@index([tenantId, kind])
   @@map("earnings")
+}
+
+/// プールからの実払い出し（Actual Revenue の源泉）
+model PoolPayout {
+  id               String   @id
+  tenantId         String
+  providerId       String
+  /// プール側の払い出し識別子。冪等キーの素材
+  externalPayoutId String
+  amountBtc        Decimal  @db.Decimal(18, 8)
+  paidAt           DateTime
+  txId             String?
+  source           String   @default("")
+  fetchedAt        DateTime @default(now())
+  /// UNALLOCATED | ALLOCATED
+  allocationStatus String   @default("UNALLOCATED")
+  allocatedAt      DateTime?
+
+  // ★ 同じ payout の二重取り込みを DB 制約で防ぐ（配賦の冪等性の第一防衛線）
+  @@unique([providerId, externalPayoutId])
+  @@index([tenantId, allocationStatus, paidAt])
+  @@map("pool_payouts")
+}
+
+/// 監視アラート
+model Alert {
+  id             String    @id
+  tenantId       String
+  /// HASHRATE_SUDDEN_DROP | WORKER_OFFLINE | REJECT_RATE_SPIKE | POOL_API_UNAVAILABLE |
+  /// STRATUM_DISCONNECT | REVENUE_ANOMALY | UNEXPECTED_PAYOUT | WITHDRAWAL_ANOMALY |
+  /// DUPLICATE_PAYOUT | LEDGER_IMBALANCE | LIVE_CONNECTION_FAILED
+  kind           String
+  /// WARNING | CRITICAL
+  severity       String    @default("WARNING")
+  message        String
+  /// 判断根拠の数値
+  evidence       Json      @default("{}")
+  targetType     String    @default("")
+  targetId       String    @default("")
+  createdAt      DateTime  @default(now())
+  acknowledgedAt DateTime?
+  acknowledgedBy String?
+
+  @@index([tenantId, acknowledgedAt, createdAt])
+  @@map("alerts")
 }
 
 // ---------------------------------------------------------------------------
