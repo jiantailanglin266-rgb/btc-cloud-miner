@@ -1,0 +1,42 @@
+node_modules/
+.next/
+out/
+build/
+dist/
+.turbo/
+
+# 環境変数 — .env.example のみコミットする
+.env
+.env.*
+!.env.example
+
+# 秘密情報（絶対にコミットしない）
+*.pem
+*.key
+*.p12
+*.pfx
+secrets/
+wallet-*.json
+*.seed
+*.mnemonic
+
+# ログ・一時ファイル
+*.log
+npm-debug.log*
+.DS_Store
+Thumbs.db
+coverage/
+.vitest/
+playwright-report/
+test-results/
+
+# Prisma
+prisma/*.db
+prisma/*.db-journal
+
+# Terraform
+infra/terraform/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example

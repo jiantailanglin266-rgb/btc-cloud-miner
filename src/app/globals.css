@@ -1,0 +1,224 @@
+@import "tailwindcss";
+
+/*
+ * デザイントークン
+ * テーマ: Bitcoin × FinTech × Cloud。ダーク基調で、暗号資産取引所レベルの信頼感を狙う。
+ * ギャンブル的な派手さは避け、情報密度と可読性を優先する。
+ */
+:root {
+  --bg: #05070d;
+  --bg-deep: #0a0e1a;
+  --card: #0f1420;
+  --card-hover: #131a29;
+  --line: rgba(255, 255, 255, 0.08);
+  --line-strong: rgba(255, 255, 255, 0.14);
+  --ink: #e8ecf4;
+  --ink-muted: #8b93a7;
+  --ink-dim: #5c6478;
+
+  /* テナントごとに上書きされる（modules/tenant/resolve.ts） */
+  --brand-primary: #f7931a; /* Bitcoin Orange */
+  --brand-accent: #2f7cff; /* Electric Blue */
+  --gold: #ffcc4d;
+
+  --pos: #22c55e;
+  --neg: #ef4444;
+  --warn: #f59e0b;
+}
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-bg-deep: var(--bg-deep);
+  --color-card: var(--card);
+  --color-card-hover: var(--card-hover);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+  --color-ink: var(--ink);
+  --color-ink-muted: var(--ink-muted);
+  --color-ink-dim: var(--ink-dim);
+  --color-brand: var(--brand-primary);
+  --color-accent: var(--brand-accent);
+  --color-gold: var(--gold);
+  --color-pos: var(--pos);
+  --color-neg: var(--neg);
+  --color-warn: var(--warn);
+  --font-sans:
+    ui-sans-serif, system-ui, -apple-system, "Segoe UI", "Hiragino Sans",
+    "Noto Sans JP", Meiryo, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+
+* {
+  border-color: var(--line);
+}
+
+html {
+  color-scheme: dark;
+}
+
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  /* 数値の桁が揃うようにする（金額・ハッシュレートの読み間違いを防ぐ） */
+  font-variant-numeric: tabular-nums;
+}
+
+/* 背景の粒子・グロー。CPU を食わない静的な CSS グラデーションで表現する */
+.bg-aurora {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    radial-gradient(
+      60rem 40rem at 15% -10%,
+      color-mix(in srgb, var(--brand-primary) 14%, transparent),
+      transparent 70%
+    ),
+    radial-gradient(
+      50rem 35rem at 85% 0%,
+      color-mix(in srgb, var(--brand-accent) 12%, transparent),
+      transparent 70%
+    ),
+    linear-gradient(180deg, var(--bg-deep) 0%, var(--bg) 55%);
+}
+
+.bg-grid {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  opacity: 0.35;
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.03) 1px, transparent 1px);
+  background-size: 56px 56px;
+  mask-image: radial-gradient(80% 60% at 50% 0%, #000 20%, transparent 85%);
+}
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 1rem;
+}
+
+.card-glow {
+  box-shadow: 0 0 40px color-mix(in srgb, var(--brand-primary) 12%, transparent);
+}
+
+.text-gradient {
+  background: linear-gradient(135deg, var(--brand-primary), var(--gold));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+/* スケルトン（ローディング） */
+@keyframes pulse-soft {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 0.15;
+  }
+}
+.skeleton {
+  background: var(--line-strong);
+  border-radius: 0.5rem;
+  animation: pulse-soft 1.6s ease-in-out infinite;
+}
+
+/* スクロールバー */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--line-strong);
+  border-radius: 999px;
+}
+
+/* フォーカスリングは消さない（キーボード操作のため） */
+:focus-visible {
+  outline: 2px solid var(--brand-accent);
+  outline-offset: 2px;
+}
+
+/* 動きを減らす設定を尊重する */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+input,
+select,
+textarea {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--line-strong);
+  border-radius: 0.6rem;
+  padding: 0.55rem 0.75rem;
+  color: var(--ink);
+  width: 100%;
+}
+input::placeholder,
+textarea::placeholder {
+  color: var(--ink-dim);
+}
+
+input[type="range"] {
+  padding: 0;
+  background: transparent;
+  border: none;
+  accent-color: var(--brand-primary);
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+th {
+  text-align: left;
+  font-weight: 500;
+  color: var(--ink-muted);
+  font-size: 0.8rem;
+  padding: 0.6rem 0.75rem;
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+td {
+  padding: 0.7rem 0.75rem;
+  border-bottom: 1px solid var(--line);
+  font-size: 0.875rem;
+}
+tbody tr:hover {
+  background: rgba(255, 255, 255, 0.02);
+}
+
+/* 表・グラフは横スクロールさせ、ページ本体は横スクロールさせない */
+.scroll-x {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* スクリーンリーダー専用（グラフの代替テーブルに使う） */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}

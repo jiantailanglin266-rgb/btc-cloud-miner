@@ -1,0 +1,527 @@
+// BTC CLOUD MINER — PostgreSQL スキーマ
+//
+// 設計方針は DATABASE.md を参照。要点:
+//   - すべての業務テーブルは tenantId を持ち、RLS と併用してテナントを分離する
+//   - BTC 金額は Decimal(18, 8)。Float は絶対に使わない（丸め誤差で残高が狂うため）
+//   - 残高カラムは持たない。残高は LedgerEntry の合計として導出する
+//   - status 系は String + CHECK 制約（DB enum は値追加時のマイグレーションが重くなるため）
+//     許容値は各フィールドのコメントに明記し、アプリ側は TypeScript の union 型で保証する
+//
+// マイグレーション適用:
+//   npx prisma migrate dev --name init     (開発)
+//   npx prisma migrate deploy               (本番)
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// テナント
+// ---------------------------------------------------------------------------
+
+model Tenant {
+  id        String   @id
+  slug      String   @unique
+  name      String
+  /// ACTIVE | SUSPENDED | TRIAL
+  status    String   @default("ACTIVE")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  settings TenantSettings?
+  domains  TenantDomain[]
+
+  @@map("tenants")
+}
+
+model TenantDomain {
+  id        String   @id @default(uuid())
+  tenantId  String
+  domain    String   @unique
+  verified  Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId])
+  @@map("tenant_domains")
+}
+
+model TenantSettings {
+  tenantId                          String  @id
+  brandName                         String
+  logoText                          String  @default("B")
+  colorPrimary                      String  @default("#f7931a")
+  colorAccent                       String  @default("#2f7cff")
+  platformFeeRate                   Decimal @db.Decimal(6, 5)
+  poolFeeRate                       Decimal @db.Decimal(6, 5)
+  electricityPriceKwh               Decimal @db.Decimal(10, 4)
+  minWithdrawalBtc                  Decimal @db.Decimal(18, 8)
+  withdrawalFeeBtc                  Decimal @db.Decimal(18, 8)
+  withdrawalTwoApproverThresholdBtc Decimal @db.Decimal(18, 8)
+  addressCooldownHours              Int     @default(24)
+  /// USD | JPY
+  defaultCurrency                   String  @default("USD")
+  featureFlags                      Json    @default("{}")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@map("tenant_settings")
+}
+
+// ---------------------------------------------------------------------------
+// ユーザー・認証
+// ---------------------------------------------------------------------------
+
+model User {
+  id             String    @id
+  tenantId       String
+  organizationId String?
+  email          String
+  name           String
+  /// USER | ORG_ADMIN | TENANT_ADMIN | PLATFORM_ADMIN | SUPPORT | AUDITOR
+  role           String    @default("USER")
+  /// ACTIVE | SUSPENDED | PENDING_VERIFICATION
+  status         String    @default("ACTIVE")
+  /// NOT_SUBMITTED | PENDING | APPROVED | REJECTED | EXPIRED
+  kycStatus      String    @default("NOT_SUBMITTED")
+  twoFactorEnabled Boolean @default(false)
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  lastLoginAt    DateTime?
+  lastLoginIp    String?
+  deletedAt      DateTime?
+
+  credential    UserCredential?
+  sessions      Session[]
+  contracts     Contract[]
+  walletAccount WalletAccount?
+  addresses     WalletAddress[]
+  withdrawals   Withdrawal[]
+  earnings      Earning[]
+  notifications Notification[]
+  tickets       SupportTicket[]
+
+  // テナント内でメールアドレスは一意
+  @@unique([tenantId, email])
+  @@index([tenantId, role])
+  @@index([tenantId, status])
+  @@map("users")
+}
+
+model UserCredential {
+  userId String @id
+  /// scrypt$<salt>$<hash> 形式。平文保存は禁止
+  passwordHash      String
+  /// AES-256-GCM で暗号化（enc:v1:...）。平文保存は禁止
+  totpSecretEnc     String?
+  recoveryCodesEnc  String?
+  failedAttempts    Int      @default(0)
+  lockedUntil       DateTime?
+  passwordChangedAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("user_credentials")
+}
+
+model Session {
+  id                  String    @id
+  userId              String
+  tenantId            String
+  /// SHA-256 ハッシュのみ保存。生トークンは Cookie にのみ存在する
+  tokenHash           String    @unique
+  twoFactorVerifiedAt DateTime?
+  createdAt           DateTime  @default(now())
+  expiresAt           DateTime
+  lastSeenAt          DateTime  @default(now())
+  ip                  String?
+  userAgent           String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("sessions")
+}
+
+// ---------------------------------------------------------------------------
+// プラン・契約
+// ---------------------------------------------------------------------------
+
+model Plan {
+  id                  String   @id
+  tenantId            String
+  name                String
+  description         String   @default("")
+  hashrateThs         Decimal  @db.Decimal(14, 4)
+  termDays            Int
+  priceUsd            Decimal  @db.Decimal(14, 2)
+  poolFeeRate         Decimal  @db.Decimal(6, 5)
+  platformFeeRate     Decimal  @db.Decimal(6, 5)
+  electricityPriceKwh Decimal  @db.Decimal(10, 4)
+  /// PPS_PLUS | FPPS | PPLNS
+  payoutScheme        String   @default("FPPS")
+  active              Boolean  @default(true)
+  createdAt           DateTime @default(now())
+
+  contracts Contract[]
+
+  @@index([tenantId, active])
+  @@map("plans")
+}
+
+model Contract {
+  id             String   @id
+  tenantId       String
+  userId         String
+  planId         String
+  planName       String
+  hashrateThs    Decimal  @db.Decimal(14, 4)
+  /// PENDING_PAYMENT | ACTIVE | EXPIRED | CANCELLED | SUSPENDED
+  status         String   @default("PENDING_PAYMENT")
+  startsAt       DateTime
+  endsAt         DateTime
+  autoRenew      Boolean  @default(false)
+  upfrontCostUsd Decimal  @db.Decimal(14, 2) @default(0)
+  createdAt      DateTime @default(now())
+
+  user        User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  plan        Plan                 @relation(fields: [planId], references: [id])
+  allocations HashrateAllocation[]
+  earnings    Earning[]
+
+  @@index([tenantId, userId])
+  @@index([tenantId, status])
+  @@map("contracts")
+}
+
+model HashrateAllocation {
+  id          String   @id
+  tenantId    String
+  contractId  String
+  providerId  String
+  workerId    String?
+  hashrateThs Decimal  @db.Decimal(14, 4)
+  createdAt   DateTime @default(now())
+
+  contract Contract @relation(fields: [contractId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, contractId])
+  @@map("hashrate_allocations")
+}
+
+// ---------------------------------------------------------------------------
+// プロバイダー・ワーカー
+// ---------------------------------------------------------------------------
+
+model MiningProvider {
+  id       String @id
+  tenantId String
+  /// MOCK | POOL_REST | STRATUM | PROVIDER_A | PROVIDER_B
+  kind     String
+  name     String
+  region   String @default("")
+  endpoint String?
+  /// Secrets Manager のキー名のみ。認証情報の値は絶対に保存しない
+  credentialsRef String?
+  /// ONLINE | DEGRADED | OFFLINE | MAINTENANCE
+  status               String    @default("OFFLINE")
+  lastOkAt             DateTime?
+  lastError            String?
+  consecutiveFailures  Int       @default(0)
+  priority             Int       @default(1)
+  enabled              Boolean   @default(true)
+  poolName             String    @default("")
+  /// PPS_PLUS | FPPS | PPLNS
+  payoutScheme         String    @default("FPPS")
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+
+  workers Worker[]
+
+  @@index([tenantId, enabled, priority])
+  @@map("mining_providers")
+}
+
+model Worker {
+  id                    String    @id
+  tenantId              String
+  providerId            String
+  externalWorkerId      String
+  minerId               String    @default("")
+  model                 String    @default("")
+  ratedHashrateThs      Decimal   @db.Decimal(14, 4)
+  ratedEfficiencyJPerTh Decimal   @db.Decimal(10, 3)
+  /// ACTIVE | OFFLINE | MAINTENANCE | UNKNOWN
+  status                String    @default("UNKNOWN")
+  lastSeenAt            DateTime?
+
+  provider  MiningProvider   @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  snapshots WorkerSnapshot[]
+
+  // 同じプロバイダー内でワーカー ID は一意（取り込み時の upsert キー）
+  @@unique([providerId, externalWorkerId])
+  @@index([tenantId, status])
+  @@map("workers")
+}
+
+/// 時系列データ。本番では bucketAt による月次パーティションを推奨（DATABASE.md §5）
+model WorkerSnapshot {
+  workerId             String
+  tenantId             String
+  bucketAt             DateTime
+  hashrateThs          Decimal  @db.Decimal(14, 4)
+  acceptedShares       BigInt   @default(0)
+  rejectedShares       BigInt   @default(0)
+  temperatureC         Decimal? @db.Decimal(6, 2)
+  powerW               Decimal? @db.Decimal(10, 2)
+  uptimeSec            BigInt   @default(0)
+  poolStatus           String   @default("")
+  workerStatus         String   @default("UNKNOWN")
+  estimatedEarningsBtc Decimal? @db.Decimal(18, 10)
+
+  worker Worker @relation(fields: [workerId], references: [id], onDelete: Cascade)
+
+  @@id([workerId, bucketAt])
+  @@index([tenantId, bucketAt])
+  @@map("worker_snapshots")
+}
+
+// ---------------------------------------------------------------------------
+// ウォレット
+// ---------------------------------------------------------------------------
+
+model WalletAccount {
+  id        String   @id
+  tenantId  String
+  userId    String   @unique
+  createdAt DateTime @default(now())
+
+  user    User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  entries LedgerEntry[]
+
+  @@index([tenantId])
+  @@map("wallet_accounts")
+}
+
+/// 複式記帳の元帳。残高はこのテーブルの合計として導出する（カラムで持たない）
+model LedgerEntry {
+  id        String @id
+  tenantId  String
+  accountId String
+  /// MINING_REWARD | FEE | WITHDRAWAL_LOCK | WITHDRAWAL_SETTLE | WITHDRAWAL_REVERSE | ADJUSTMENT
+  entryType String
+  /// AVAILABLE | LOCKED
+  bucket    String
+  /// 符号付き。同一操作内の合計はゼロになるよう仕訳する
+  amountBtc Decimal @db.Decimal(18, 8)
+  refType   String?
+  refId     String?
+  /// 二重計上の防止。テナント内で一意
+  idempotencyKey String?
+  memo           String   @default("")
+  createdAt      DateTime @default(now())
+
+  account WalletAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, idempotencyKey])
+  @@index([accountId, bucket])
+  @@map("ledger_entries")
+}
+
+model WalletAddress {
+  id        String   @id
+  tenantId  String
+  userId    String
+  address   String
+  label     String   @default("")
+  createdAt DateTime @default(now())
+  /// クールダウン。この時刻を過ぎるまで送金できない
+  usableAt  DateTime
+
+  user        User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  withdrawals Withdrawal[]
+
+  @@index([tenantId, userId])
+  @@map("wallet_addresses")
+}
+
+model Withdrawal {
+  id        String  @id
+  tenantId  String
+  userId    String
+  userEmail String
+  addressId String
+  address   String
+  amountBtc Decimal @db.Decimal(18, 8)
+  feeBtc    Decimal @db.Decimal(18, 8)
+  netBtc    Decimal @db.Decimal(18, 8)
+  /// PENDING_REVIEW | FLAGGED | APPROVED | REJECTED | BROADCASTING | BROADCASTED | CONFIRMED | FAILED | CANCELLED
+  status    String  @default("PENDING_REVIEW")
+  riskScore Int     @default(0)
+  /// string[]
+  riskReasons Json  @default("[]")
+  requiredApprovals Int @default(1)
+  /// WithdrawalApproval[]
+  approvals   Json  @default("[]")
+  requestedIp String?
+  txId        String?
+  confirmations Int  @default(0)
+  idempotencyKey String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  user    User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  address_ WalletAddress @relation(fields: [addressId], references: [id])
+
+  @@unique([tenantId, idempotencyKey])
+  @@index([tenantId, status, createdAt])
+  @@map("withdrawals")
+}
+
+model Earning {
+  id               String   @id
+  tenantId         String
+  userId           String
+  contractId       String
+  earnedAt         DateTime
+  grossBtc         Decimal  @db.Decimal(18, 8)
+  poolFeeBtc       Decimal  @db.Decimal(18, 8)
+  platformFeeBtc   Decimal  @db.Decimal(18, 8)
+  electricityFeeBtc Decimal @db.Decimal(18, 8)
+  netBtc           Decimal  @db.Decimal(18, 8)
+  hashrateThs      Decimal  @db.Decimal(14, 4)
+  uptimeRate       Decimal  @db.Decimal(6, 5)
+
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  contract Contract @relation(fields: [contractId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, userId, earnedAt])
+  @@map("earnings")
+}
+
+// ---------------------------------------------------------------------------
+// 通知・サポート・障害
+// ---------------------------------------------------------------------------
+
+model Notification {
+  id        String    @id
+  tenantId  String
+  userId    String
+  /// INFO | WARNING | CRITICAL
+  level     String    @default("INFO")
+  title     String
+  body      String
+  href      String?
+  readAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, readAt, createdAt])
+  @@map("notifications")
+}
+
+model SupportTicket {
+  id        String   @id
+  tenantId  String
+  userId    String
+  userEmail String
+  subject   String
+  category  String   @default("")
+  /// OPEN | IN_PROGRESS | RESOLVED | CLOSED
+  status    String   @default("OPEN")
+  /// SupportMessage[]
+  messages  Json     @default("[]")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, status])
+  @@map("support_tickets")
+}
+
+model Incident {
+  id       String @id
+  tenantId String
+  title    String
+  /// SEV1 | SEV2 | SEV3 | SEV4
+  severity String @default("SEV3")
+  /// INVESTIGATING | IDENTIFIED | MONITORING | RESOLVED
+  status   String @default("INVESTIGATING")
+  body     String @default("")
+  /// string[]
+  affectedComponents Json     @default("[]")
+  startedAt          DateTime @default(now())
+  resolvedAt         DateTime?
+
+  @@index([tenantId, status])
+  @@map("incidents")
+}
+
+// ---------------------------------------------------------------------------
+// 監査・AI
+// ---------------------------------------------------------------------------
+
+/// 追記専用。本番ではアプリ用ロールから UPDATE / DELETE を REVOKE すること
+model AuditLog {
+  id           String   @id
+  tenantId     String
+  actorUserId  String?
+  actorEmail   String   @default("")
+  actorRole    String   @default("")
+  action       String
+  targetType   String   @default("")
+  targetId     String   @default("")
+  /// 機微情報はマスク済み
+  detail       Json     @default("{}")
+  ip           String?
+  userAgent    String?
+  /// SUCCESS | FAILURE
+  result       String   @default("SUCCESS")
+  createdAt    DateTime @default(now())
+
+  @@index([tenantId, createdAt])
+  @@index([actorUserId])
+  @@index([action])
+  @@map("audit_logs")
+}
+
+model AiInsight {
+  id         String @id
+  tenantId   String
+  kind       String
+  /// INFO | WARNING | CRITICAL
+  severity   String @default("INFO")
+  title      String
+  detail     String @default("")
+  recommendation String @default("")
+  /// worker | provider | portfolio
+  targetType String
+  targetId   String
+  /// 判断根拠の数値。人が検算できるようにする
+  evidence   Json   @default("{}")
+  createdAt  DateTime @default(now())
+
+  @@index([tenantId, severity])
+  @@map("ai_insights")
+}
+
+/// 冪等キーの記録（API レベルの二重実行防止）
+model IdempotencyKey {
+  tenantId  String
+  key       String
+  scope     String
+  response  Json?
+  createdAt DateTime @default(now())
+
+  @@id([tenantId, key])
+  @@map("idempotency_keys")
+}
