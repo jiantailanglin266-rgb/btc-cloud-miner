@@ -231,6 +231,51 @@ export type ProviderKind =
 export type DataMode = "LIVE" | "STALE" | "MOCK";
 
 /**
+ * sourceMode（フェーズ3: Live Data Certification）。
+ * DataMode より厳密な 4 区分。**LIVE として扱ってよいのは LIVE_API のみ**。
+ *   MOCK       = 擬似生成データ
+ *   FIXTURE    = 記録済みフィクスチャ（テスト用）
+ *   LIVE_API   = 実 API から直近に取得した実データ（これだけが LIVE）
+ *   STALE_LIVE = 実 API 由来だが古いキャッシュ
+ */
+export type SourceMode = "MOCK" | "FIXTURE" | "LIVE_API" | "STALE_LIVE";
+
+/**
+ * 実プロバイダー疎通の証明記録（フェーズ4）。
+ * Secret は保存しない（accountIdentifierMasked は末尾4桁マスク済み）。
+ */
+export type ProviderCertification = {
+  id: string;
+  tenantId: string;
+  providerId: string;
+  providerKind: ProviderKind;
+  accountIdentifierMasked: string | null;
+  testedAt: ISODateString;
+  workerCount: number | null;
+  hashrateThs: number | null;
+  balanceSatoshi: string | null;
+  latencyMs: number | null;
+  result: TestConnectionCode;
+  codeVersion: string;
+  environment: string;
+};
+
+/** Dead Letter Job（フェーズ13）: 最大試行後も失敗したジョブの記録 */
+export type DeadLetterJob = {
+  id: string;
+  tenantId: string;
+  jobKind: string;
+  payload: Record<string, unknown>;
+  attempts: number;
+  lastError: string;
+  createdAt: ISODateString;
+  /** 管理者が再実行した時刻。null = 未再実行 */
+  retriedAt: ISODateString | null;
+  retriedBy: string | null;
+  status: "DEAD" | "RETRIED" | "RESOLVED";
+};
+
+/**
  * 出所情報付きの値。外部から取得した数値には必ずこれを付ける。
  * 「どこから・いつ・推定か・古いか」を UI まで運ぶための封筒。
  */
@@ -267,9 +312,25 @@ export type PoolPayout = {
   txId: string | null;
   source: string;
   fetchedAt: ISODateString;
-  /** UNALLOCATED = 未配賦 / ALLOCATED = ユーザーへ配賦済み */
-  allocationStatus: "UNALLOCATED" | "ALLOCATED";
+  /**
+   * UNALLOCATED     = 未配賦（Safety Gate 通過待ち）
+   * ALLOCATED       = ユーザーへ配賦済み
+   * PENDING_REVIEW  = Safety Gate 不通過。人間の確認が必要（無条件自動配賦の禁止）
+   */
+  allocationStatus: "UNALLOCATED" | "ALLOCATED" | "PENDING_REVIEW";
   allocatedAt: ISODateString | null;
+  /** ゲート不通過・検証保留の理由（人が読める形） */
+  reviewReason: string | null;
+  /**
+   * Blockchain 検証（フェーズ8）:
+   *   VERIFIED             = 公開 API で tx の存在・confirmations を確認済み
+   *   VERIFICATION_PENDING = txid はあるが未検証（API 障害時もここ。payout 処理は壊さない）
+   *   NOT_APPLICABLE       = txid なし（Mock 等）
+   *   MISMATCH             = tx は存在するが金額が payout 額未満
+   */
+  verificationStatus: "VERIFIED" | "VERIFICATION_PENDING" | "NOT_APPLICABLE" | "MISMATCH";
+  confirmations: number | null;
+  verifiedAt: ISODateString | null;
 };
 
 export type ProviderStatus = "ONLINE" | "DEGRADED" | "OFFLINE" | "MAINTENANCE";
@@ -656,7 +717,11 @@ export type AlertKind =
   | "WITHDRAWAL_ANOMALY"
   | "DUPLICATE_PAYOUT"
   | "LEDGER_IMBALANCE"
-  | "LIVE_CONNECTION_FAILED";
+  | "LIVE_CONNECTION_FAILED"
+  | "WORKER_SYNC_MISMATCH"
+  | "HASHRATE_DATA_ANOMALY"
+  | "PAYOUT_VALIDATION_FAILED"
+  | "ALLOCATION_GATE_BLOCKED";
 
 export type Alert = {
   id: string;

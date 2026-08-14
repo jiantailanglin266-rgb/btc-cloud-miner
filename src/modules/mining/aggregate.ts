@@ -13,6 +13,13 @@ import type {
 } from "@/types";
 import { getStore } from "@/lib/store";
 import { fetchAllProviders, getProviderHealth } from "@/modules/provider/registry";
+import {
+  validateWorkerSync,
+  raiseWorkerSyncMismatch,
+  checkHashrateSanity,
+  hashrateAnomalyAlert,
+} from "./validation";
+import { raiseAlert } from "@/modules/monitoring/alerts";
 import { MockMiningProviderAdapter, mockHashrateAt } from "@/modules/provider/adapters/mock";
 import { getNetworkAndPrice } from "@/modules/bitcoin/service";
 import { calculateRevenue } from "@/modules/revenue/engine";
@@ -95,6 +102,17 @@ export async function persistSnapshots(tenantId: string): Promise<number> {
       ? outcome.provider.name
       : `mock:${outcome.provider.name}`;
 
+    // ★ フェーズ5: API vs DB のワーカー整合性検証（差異は WORKER_SYNC_MISMATCH）
+    if (outcome.readings.length > 0) {
+      const v = validateWorkerSync(outcome.provider.id, outcome.readings, existing);
+      if (!v.ok) {
+        await raiseWorkerSyncMismatch(tenantId, outcome.provider.id, outcome.provider.name, v);
+      }
+    }
+
+    // 直近スナップショット（前回比急落の検出に使う）
+    const latest = await store.latestSnapshotByWorker(tenantId);
+
     // 未登録ワーカーを upsert（ワーカー台帳を provider に追随させる）
     const toUpsert: Worker[] = [];
     for (const r of outcome.readings) {
@@ -127,6 +145,16 @@ export async function persistSnapshots(tenantId: string): Promise<number> {
           };
       toUpsert.push(worker);
       byKey.set(key, worker);
+
+      // ★ フェーズ6: Hashrate Sanity Check。
+      //   異常値（NaN/Infinity/負値/上限超/極端な乖離）はスナップショットに保存しない
+      //   ＝Ledger・収益計算・配賦の重みに一切使われない
+      const prev = latest.get(worker.id)?.hashrateThs ?? null;
+      const sanity = checkHashrateSanity(r, prev);
+      if (sanity.anomalies.length > 0) {
+        await raiseAlert(tenantId, hashrateAnomalyAlert(worker.id, r.externalWorkerId, sanity));
+      }
+      if (!sanity.usable) continue;
 
       snapshots.push({
         workerId: worker.id,

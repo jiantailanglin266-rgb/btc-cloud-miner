@@ -445,9 +445,15 @@ model PoolPayout {
   txId             String?
   source           String   @default("")
   fetchedAt        DateTime @default(now())
-  /// UNALLOCATED | ALLOCATED
+  /// UNALLOCATED | ALLOCATED | PENDING_REVIEW（Safety Gate 不通過）
   allocationStatus String   @default("UNALLOCATED")
   allocatedAt      DateTime?
+  /// Gate 不通過・検証保留の理由
+  reviewReason     String?
+  /// VERIFIED | VERIFICATION_PENDING | NOT_APPLICABLE | MISMATCH
+  verificationStatus String @default("NOT_APPLICABLE")
+  confirmations    Int?
+  verifiedAt       DateTime?
 
   // ★ 同じ payout の二重取り込みを DB 制約で防ぐ（配賦の冪等性の第一防衛線）
   @@unique([providerId, externalPayoutId])
@@ -481,6 +487,46 @@ model SyncLock {
 
   @@index([expiresAt])
   @@map("sync_locks")
+}
+
+/// 実プロバイダー疎通の証明記録（Secret は保存しない）
+model ProviderCertification {
+  id                      String   @id
+  tenantId                String
+  providerId              String
+  providerKind            String
+  /// 末尾4桁マスク済み（平文は保存しない）
+  accountIdentifierMasked String?
+  testedAt                DateTime @default(now())
+  workerCount             Int?
+  hashrateThs             Decimal? @db.Decimal(14, 4)
+  balanceSatoshi          BigInt?
+  latencyMs               Int?
+  /// CONNECTED | AUTHENTICATION_FAILED | RATE_LIMITED | TIMEOUT | INVALID_RESPONSE | PROVIDER_OFFLINE
+  result                  String
+  codeVersion             String   @default("")
+  environment             String   @default("")
+
+  @@index([tenantId, providerId, testedAt])
+  @@map("provider_certifications")
+}
+
+/// 最大試行後も失敗したジョブ（Dead Letter）。Admin から再実行可能
+model DeadLetterJob {
+  id        String   @id
+  tenantId  String
+  jobKind   String
+  payload   Json     @default("{}")
+  attempts  Int      @default(0)
+  lastError String   @default("")
+  createdAt DateTime @default(now())
+  retriedAt DateTime?
+  retriedBy String?
+  /// DEAD | RETRIED | RESOLVED
+  status    String   @default("DEAD")
+
+  @@index([tenantId, status, createdAt])
+  @@map("dead_letter_jobs")
 }
 
 /// 監視アラート

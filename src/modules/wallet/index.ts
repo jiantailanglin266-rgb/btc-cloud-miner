@@ -86,6 +86,13 @@ export async function requestWithdrawal(params: {
     throw new WithdrawalError("現在、出金機能を一時停止しています");
   }
 
+  // ①-2 Pilot Mode（フェーズ19）: 実収益管理の実証中は外部出金を全面禁止する
+  if (config.pilotMode) {
+    throw new WithdrawalError(
+      "PILOT MODE のため外部出金は無効です（実マイニングデータ・実収益の管理のみを実証しています）",
+    );
+  }
+
   // ② 冪等: 同じキーの申請が既にあればそれを返す（二重申請しない）
   const existing = await store.getWithdrawalByIdempotencyKey(
     user.tenantId,

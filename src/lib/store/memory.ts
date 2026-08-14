@@ -42,6 +42,7 @@ import { hashPassword, newId } from "@/lib/crypto";
 import { config } from "@/lib/config";
 import { addBtc } from "@/lib/decimal";
 import { demoAddress } from "@/modules/wallet/address";
+import type { DeadLetterJob, ProviderCertification } from "@/types";
 
 // ---------------------------------------------------------------------------
 // 決定的 PRNG
@@ -88,6 +89,8 @@ type Db = {
   alerts: Alert[];
   rawSnapshots: RawProviderSnapshot[];
   locks: Map<string, SyncLock>;
+  certifications: ProviderCertification[];
+  deadLetters: DeadLetterJob[];
 };
 
 const DEFAULT_TENANT_ID = "tenant-default";
@@ -108,7 +111,57 @@ function iso(ms: number): string {
 // シード
 // ---------------------------------------------------------------------------
 
+/**
+ * production では demo seed を生成しない（フェーズ15: Demo/Production 完全分離）。
+ * 既定テナントと設定だけの空ストアを返す。
+ * demo@example.com / MOCK provider / demo payout / demo ledger は一切作られない。
+ */
+function buildProductionSeed(): Db {
+  const now = Date.now();
+  const db = emptyDb();
+  db.tenants.push({
+    id: DEFAULT_TENANT_ID,
+    slug: "default",
+    name: config.brandName,
+    status: "ACTIVE",
+    createdAt: iso(now),
+  });
+  db.settings.set(DEFAULT_TENANT_ID, {
+    tenantId: DEFAULT_TENANT_ID,
+    brandName: config.brandName,
+    logoText: "₿",
+    colorPrimary: "#f7931a",
+    colorAccent: "#2f7cff",
+    platformFeeRate: config.fees.platformFeeRate,
+    poolFeeRate: config.fees.poolFeeRate,
+    electricityPriceKwh: config.fees.electricityPriceKwh,
+    minWithdrawalBtc: config.wallet.minWithdrawalBtc,
+    withdrawalFeeBtc: config.wallet.withdrawalFeeBtc,
+    withdrawalTwoApproverThresholdBtc: config.wallet.twoApproverThresholdBtc,
+    addressCooldownHours: config.wallet.addressCooldownHours,
+    defaultCurrency: "USD",
+    featureFlags: {},
+  });
+  return db;
+}
+
+function emptyDb(): Db {
+  return {
+    tenants: [], settings: new Map(), users: [], credentials: new Map(),
+    sessions: new Map(), plans: [], contracts: [], allocations: [],
+    providers: [], workers: [], snapshots: [], accounts: [], ledger: [],
+    addresses: [], withdrawals: [], earnings: [], notifications: [],
+    tickets: [], incidents: [], auditLogs: [], insights: [], payouts: [],
+    alerts: [], rawSnapshots: [], locks: new Map(),
+    certifications: [], deadLetters: [],
+  };
+}
+
 function buildSeed(): Db {
+  // ★ NODE_ENV=production では demo seed を構造的に実行不可能にする
+  if (process.env.NODE_ENV === "production") {
+    return buildProductionSeed();
+  }
   const rnd = mulberry32(20260808);
   const now = Date.now();
   const day = 86_400_000;
@@ -139,6 +192,8 @@ function buildSeed(): Db {
     alerts: [],
     rawSnapshots: [],
     locks: new Map(),
+    certifications: [],
+    deadLetters: [],
   };
 
   // --- テナント ------------------------------------------------------------
@@ -1222,6 +1277,40 @@ export const memoryStore: Store = {
   async releaseLock(key, holder) {
     const existing = db.locks.get(key);
     if (existing && existing.holder === holder) db.locks.delete(key);
+  },
+
+  // --- Provider Certification ----------------------------------------------
+  async insertCertification(cert) {
+    db.certifications.push(cert);
+    if (db.certifications.length > 500) {
+      db.certifications.splice(0, db.certifications.length - 500);
+    }
+  },
+  async listCertifications(tenantId, providerId, limit = 20) {
+    return clone(
+      db.certifications
+        .filter((c) => c.tenantId === tenantId && (!providerId || c.providerId === providerId))
+        .sort((a, b) => b.testedAt.localeCompare(a.testedAt))
+        .slice(0, limit),
+    );
+  },
+
+  // --- Dead Letter Job ------------------------------------------------------
+  async insertDeadLetter(job) {
+    db.deadLetters.push(job);
+    if (db.deadLetters.length > 500) db.deadLetters.splice(0, db.deadLetters.length - 500);
+  },
+  async listDeadLetters(tenantId, filter) {
+    let list = db.deadLetters.filter((d) => d.tenantId === tenantId);
+    if (filter?.status) list = list.filter((d) => d.status === filter.status);
+    list = [...list].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    return clone(filter?.limit ? list.slice(0, filter.limit) : list);
+  },
+  async updateDeadLetter(tenantId, id, patch) {
+    const i = db.deadLetters.findIndex((d) => d.tenantId === tenantId && d.id === id);
+    if (i === -1) return null;
+    db.deadLetters[i] = { ...db.deadLetters[i], ...patch, id, tenantId };
+    return clone(db.deadLetters[i]);
   },
 };
 

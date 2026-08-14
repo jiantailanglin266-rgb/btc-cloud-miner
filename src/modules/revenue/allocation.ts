@@ -33,6 +33,8 @@ import { toSat, fromSat } from "@/lib/decimal";
 import { newId } from "@/lib/crypto";
 import { audit } from "@/lib/audit";
 import { raiseAlert } from "@/modules/monitoring/alerts";
+import { isProviderCertified } from "@/modules/provider/certification";
+import { verifyInvariants } from "@/modules/wallet/ledger";
 
 // ---------------------------------------------------------------------------
 // 純関数部（テスト対象の中核）
@@ -223,13 +225,109 @@ async function buildShares(
 }
 
 /**
+ * Allocation Safety Gate（フェーズ9）
+ *
+ * 実 payout を自動配賦する前に満たすべき条件。1 つでも欠ければ
+ * PENDING_REVIEW にして人間の確認に回す（無条件自動配賦の禁止）。
+ *
+ *   1. Provider certified   … 直近7日以内に実疎通の証明がある（Mock は対象外）
+ *   2. Payout unique        … UNIQUE 制約 + 状態フラグ（既存の冪等 1・2 層）
+ *   3. Amount valid         … 金額が正・現実的範囲
+ *   4. Worker snapshot      … payout 期間に実測スナップショットがある
+ *                             （無ければ契約値按分になるため、LIVE payout では確認必須）
+ *   5. Allocation invariant … satoshi 保存則（allocatePayout 内の自己検証）
+ *   6. Ledger balanced      … 対象ユーザーの元帳が不変条件を満たしている
+ */
+export type GateCheck = { name: string; ok: boolean; detail: string };
+
+async function runSafetyGate(
+  tenantId: string,
+  payout: PoolPayout,
+  contracts: Contract[],
+): Promise<{ passed: boolean; checks: GateCheck[] }> {
+  const store = await getStore();
+  const checks: GateCheck[] = [];
+  const isLivePayout = !payout.source.startsWith("mock");
+
+  // 1. Provider certified
+  const provider = await store.getProvider(tenantId, payout.providerId);
+  if (!provider) {
+    checks.push({ name: "provider_certified", ok: false, detail: "プロバイダーが存在しません" });
+  } else {
+    const certified = await isProviderCertified(tenantId, provider);
+    checks.push({
+      name: "provider_certified",
+      ok: certified,
+      detail: certified
+        ? "疎通証明あり"
+        : "直近7日の CONNECTED certification がありません（TEST CONNECTION を実行してください）",
+    });
+  }
+
+  // 2. Payout unique（状態で担保。二重は上位層が防ぐ）
+  checks.push({
+    name: "payout_unique",
+    ok: payout.allocationStatus !== "ALLOCATED",
+    detail: payout.allocationStatus,
+  });
+
+  // 3. Amount valid
+  const amountOk = toSat(payout.amountBtc) > 0n && Number(payout.amountBtc) <= 100;
+  checks.push({
+    name: "amount_valid",
+    ok: amountOk,
+    detail: `${payout.amountBtc} BTC`,
+  });
+
+  // 4. Worker snapshot available（LIVE payout のみ必須。Mock はデモ用に緩和）
+  const paidAtMs = new Date(payout.paidAt).getTime();
+  const snapshots = await store.listSnapshots(tenantId, {
+    fromMs: paidAtMs - 24 * 3600_000,
+    limit: 1000,
+  });
+  const inWindow = snapshots.filter((s) => new Date(s.bucketAt).getTime() <= paidAtMs);
+  const snapshotOk = !isLivePayout || inWindow.length > 0;
+  checks.push({
+    name: "worker_snapshot_available",
+    ok: snapshotOk,
+    detail:
+      inWindow.length > 0
+        ? `期間内スナップショット ${inWindow.length} 件`
+        : "payout 期間の実測スナップショットがありません（契約値按分になるため要確認）",
+  });
+
+  // 6. Ledger balanced（配賦先ユーザーの元帳を事前検査）
+  let ledgerOk = true;
+  const ledgerIssues: string[] = [];
+  for (const c of contracts) {
+    const account = await store.getWalletAccount(tenantId, c.userId);
+    const entries = await store.listLedgerEntries(tenantId, account.id);
+    if (entries.length === 0) continue;
+    const inv = verifyInvariants(entries);
+    if (!inv.ok) {
+      ledgerOk = false;
+      ledgerIssues.push(`${c.userId}: ${inv.violations[0]}`);
+    }
+  }
+  checks.push({
+    name: "ledger_balanced",
+    ok: ledgerOk,
+    detail: ledgerOk ? "不変条件 OK" : ledgerIssues.join(" / ").slice(0, 200),
+  });
+
+  return { passed: checks.every((c) => c.ok), checks };
+}
+
+/**
  * 1 件の payout をユーザーへ配賦し、Ledger と Earning に記帳する。
  * 冪等: 同じ payout に対して何度呼んでも二重計上されない。
+ * Safety Gate 不通過は PENDING_REVIEW にして配賦しない。
  */
 export async function allocatePayoutToUsers(
   tenantId: string,
   payoutId: string,
   actor: { userId: string | null; email: string; role: string },
+  opts: { bypassGate?: boolean } = {},
 ): Promise<AllocationResult> {
   const store = await getStore();
 
@@ -256,6 +354,29 @@ export async function allocatePayoutToUsers(
       `payout 期間に有効な契約がありません（provider=${payout.providerId}）。` +
         `配賦せずに保留します。`,
     );
+  }
+
+  // ★ Allocation Safety Gate（フェーズ9）: 不通過なら PENDING_REVIEW にして配賦しない。
+  //   bypassGate は管理者の明示操作（レビュー済み payout の手動配賦）でのみ true になる
+  if (!opts.bypassGate) {
+    const gate = await runSafetyGate(tenantId, payout, contracts);
+    if (!gate.passed) {
+      const failed = gate.checks.filter((c) => !c.ok);
+      const reason = failed.map((c) => `${c.name}: ${c.detail}`).join(" / ");
+      await store.updatePayout(tenantId, payout.id, {
+        allocationStatus: "PENDING_REVIEW",
+        reviewReason: reason.slice(0, 500),
+      });
+      await raiseAlert(tenantId, {
+        kind: "ALLOCATION_GATE_BLOCKED",
+        severity: "WARNING",
+        message: `payout ${payout.externalPayoutId} は Safety Gate 不通過のため保留にしました`,
+        evidence: { payoutId: payout.id, reason: reason.slice(0, 300) },
+        targetType: "payout",
+        targetId: payout.id,
+      });
+      throw new AllocationError(`Safety Gate 不通過（PENDING_REVIEW に変更）: ${reason}`);
+    }
   }
 
   const shares = await buildShares(tenantId, payout, contracts);

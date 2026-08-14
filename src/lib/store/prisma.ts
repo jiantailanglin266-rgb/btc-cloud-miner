@@ -16,6 +16,8 @@ import type {
   AiInsight,
   Alert,
   AuditLog,
+  DeadLetterJob,
+  ProviderCertification,
   Contract,
   Earning,
   HashrateAllocation,
@@ -218,6 +220,10 @@ function mapPayout(r: any): PoolPayout {
     fetchedAt: isoReq(r.fetchedAt),
     allocationStatus: r.allocationStatus,
     allocatedAt: iso(r.allocatedAt),
+    reviewReason: r.reviewReason ?? null,
+    verificationStatus: r.verificationStatus ?? "NOT_APPLICABLE",
+    confirmations: r.confirmations ?? null,
+    verifiedAt: iso(r.verifiedAt),
   };
 }
 
@@ -1147,6 +1153,10 @@ export async function createPrismaStore(): Promise<Store> {
             fetchedAt: new Date(payout.fetchedAt),
             allocationStatus: payout.allocationStatus,
             allocatedAt: payout.allocatedAt ? new Date(payout.allocatedAt) : null,
+            reviewReason: payout.reviewReason,
+            verificationStatus: payout.verificationStatus,
+            confirmations: payout.confirmations,
+            verifiedAt: payout.verifiedAt ? new Date(payout.verifiedAt) : null,
           },
         });
         return true;
@@ -1184,6 +1194,14 @@ export async function createPrismaStore(): Promise<Store> {
           }),
           ...(patch.allocatedAt !== undefined && {
             allocatedAt: patch.allocatedAt ? new Date(patch.allocatedAt) : null,
+          }),
+          ...(patch.reviewReason !== undefined && { reviewReason: patch.reviewReason }),
+          ...(patch.verificationStatus !== undefined && {
+            verificationStatus: patch.verificationStatus,
+          }),
+          ...(patch.confirmations !== undefined && { confirmations: patch.confirmations }),
+          ...(patch.verifiedAt !== undefined && {
+            verifiedAt: patch.verifiedAt ? new Date(patch.verifiedAt) : null,
           }),
         },
       });
@@ -1296,6 +1314,118 @@ export async function createPrismaStore(): Promise<Store> {
     },
     async releaseLock(key, holder) {
       await prisma.syncLock.deleteMany({ where: { key, holder } });
+    },
+
+    // --- Provider Certification --------------------------------------------
+    async insertCertification(cert) {
+      await prisma.providerCertification.create({
+        data: {
+          id: cert.id,
+          tenantId: cert.tenantId,
+          providerId: cert.providerId,
+          providerKind: cert.providerKind,
+          accountIdentifierMasked: cert.accountIdentifierMasked,
+          testedAt: new Date(cert.testedAt),
+          workerCount: cert.workerCount,
+          hashrateThs: cert.hashrateThs,
+          balanceSatoshi: cert.balanceSatoshi ? BigInt(cert.balanceSatoshi) : null,
+          latencyMs: cert.latencyMs,
+          result: cert.result,
+          codeVersion: cert.codeVersion,
+          environment: cert.environment,
+        },
+      });
+    },
+    async listCertifications(tenantId, providerId, limit = 20) {
+      return (
+        await prisma.providerCertification.findMany({
+          where: { tenantId, ...(providerId ? { providerId } : {}) },
+          orderBy: { testedAt: "desc" },
+          take: limit,
+        })
+      ).map(
+        (r): ProviderCertification => ({
+          id: r.id,
+          tenantId: r.tenantId,
+          providerId: r.providerId,
+          providerKind: r.providerKind as ProviderCertification["providerKind"],
+          accountIdentifierMasked: r.accountIdentifierMasked,
+          testedAt: isoReq(r.testedAt),
+          workerCount: r.workerCount,
+          hashrateThs: numOrNull(r.hashrateThs),
+          balanceSatoshi: r.balanceSatoshi !== null ? r.balanceSatoshi.toString() : null,
+          latencyMs: r.latencyMs,
+          result: r.result as ProviderCertification["result"],
+          codeVersion: r.codeVersion,
+          environment: r.environment,
+        }),
+      );
+    },
+
+    // --- Dead Letter Job ----------------------------------------------------
+    async insertDeadLetter(job) {
+      await prisma.deadLetterJob.create({
+        data: {
+          id: job.id,
+          tenantId: job.tenantId,
+          jobKind: job.jobKind,
+          payload: job.payload as unknown as object,
+          attempts: job.attempts,
+          lastError: job.lastError,
+          createdAt: new Date(job.createdAt),
+          status: job.status,
+        },
+      });
+    },
+    async listDeadLetters(tenantId, filter) {
+      return (
+        await prisma.deadLetterJob.findMany({
+          where: { tenantId, ...(filter?.status ? { status: filter.status } : {}) },
+          orderBy: { createdAt: "desc" },
+          take: filter?.limit ?? 100,
+        })
+      ).map(
+        (r): DeadLetterJob => ({
+          id: r.id,
+          tenantId: r.tenantId,
+          jobKind: r.jobKind,
+          payload: jsonObject(r.payload),
+          attempts: r.attempts,
+          lastError: r.lastError,
+          createdAt: isoReq(r.createdAt),
+          retriedAt: iso(r.retriedAt),
+          retriedBy: r.retriedBy,
+          status: r.status as DeadLetterJob["status"],
+        }),
+      );
+    },
+    async updateDeadLetter(tenantId, id, patch) {
+      const existing = await prisma.deadLetterJob.findFirst({ where: { id, tenantId } });
+      if (!existing) return null;
+      const r = await prisma.deadLetterJob.update({
+        where: { id },
+        data: {
+          ...(patch.status !== undefined && { status: patch.status }),
+          ...(patch.retriedAt !== undefined && {
+            retriedAt: patch.retriedAt ? new Date(patch.retriedAt) : null,
+          }),
+          ...(patch.retriedBy !== undefined && { retriedBy: patch.retriedBy }),
+          ...(patch.attempts !== undefined && { attempts: patch.attempts }),
+          ...(patch.lastError !== undefined && { lastError: patch.lastError }),
+        },
+      });
+      return {
+        id: r.id,
+        tenantId: r.tenantId,
+        jobKind: r.jobKind,
+        payload: jsonObject(r.payload),
+        attempts: r.attempts,
+        lastError: r.lastError,
+        createdAt: isoReq(r.createdAt),
+        retriedAt: iso(r.retriedAt),
+        retriedBy: r.retriedBy,
+        status: r.status as DeadLetterJob["status"],
+      };
     },
 
     // --- 通知・サポート・障害 ---------------------------------------------

@@ -319,6 +319,9 @@ export const POST = handler(async (req: Request) => {
         lastError: result.code === "CONNECTED" ? null : result.message,
         lastLatencyMs: result.latencyMs ?? undefined,
       });
+      // 疎通の証明記録（Secret は保存しない。account は末尾4桁マスク）
+      const { recordCertification } = await import("@/modules/provider/certification");
+      await recordCertification(ctx.tenant.id, provider, result);
       return ok(result);
     }
 
@@ -330,6 +333,43 @@ export const POST = handler(async (req: Request) => {
     case "run-payout-sync": {
       const r = await runPayoutSync(ctx.tenant.id);
       return ok(r);
+    }
+
+    // --- scheduler ジョブの実行（cloud scheduler からの HTTP エントリ） ------
+    case "run-job": {
+      const { runJob, JOB_INTERVALS } = await import("@/modules/scheduler");
+      const jobKind = typeof body.jobKind === "string" ? body.jobKind : "";
+      if (!(jobKind in JOB_INTERVALS)) {
+        return validationError([
+          { path: "jobKind", message: `不明なジョブです（${Object.keys(JOB_INTERVALS).join(" / ")}）` },
+        ]);
+      }
+      const r = await runJob(jobKind as keyof typeof JOB_INTERVALS, ctx.tenant.id);
+      return ok(r);
+    }
+
+    // --- Dead Letter の再実行 ------------------------------------------------
+    case "retry-dead-letter": {
+      const { retryDeadLetter } = await import("@/modules/scheduler");
+      const id = typeof body.deadLetterId === "string" ? body.deadLetterId : null;
+      if (!id) return validationError([{ path: "deadLetterId", message: "必須です" }]);
+      try {
+        const r = await retryDeadLetter(ctx.tenant.id, id, ctx.user.id);
+        await audit({
+          tenantId: ctx.tenant.id,
+          actorUserId: ctx.user.id,
+          actorEmail: ctx.user.email,
+          actorRole: ctx.user.role,
+          action: "admin.dead_letter.retry",
+          targetType: "dead_letter",
+          targetId: id,
+          detail: { ok: r.ok, summary: r.summary },
+          ip,
+        });
+        return ok(r);
+      } catch (err) {
+        return unprocessable(err instanceof Error ? err.message : "再実行に失敗しました");
+      }
     }
 
     // --- payout の同期（実プールから払い出し履歴を取り込む） ----------------
@@ -355,7 +395,10 @@ export const POST = handler(async (req: Request) => {
       const actor = { userId: ctx.user.id, email: ctx.user.email, role: ctx.user.role };
       try {
         if (id) {
-          const result = await allocatePayoutToUsers(ctx.tenant.id, id, actor);
+          // 個別指定の手動配賦のみ、管理者の明示操作として Gate を bypass できる
+          // （PENDING_REVIEW をレビュー後に配賦するための経路。監査ログに残る）
+          const bypassGate = body.bypassGate === true;
+          const result = await allocatePayoutToUsers(ctx.tenant.id, id, actor, { bypassGate });
           return ok(result);
         }
         const result = await allocateAllPending(ctx.tenant.id, actor);

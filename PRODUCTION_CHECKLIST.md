@@ -2,19 +2,36 @@
 
 各項目に実装状況を付す: **PASS**（コードで担保済み）/ **FAIL**（未実装）/ **MANUAL**（運用・契約で人が実施）。
 
-## Production Readiness Score: 85 / 100
+## 採点の考え方: CODE READY と LIVE VERIFIED を分離する
+
+- **CODE READINESS** … コードとテストで担保できる範囲の完成度。CI で再現可能
+- **LIVE VERIFIED** … 実 F2Pool アカウント・実 ASIC・実 payout での検証。
+  **コードがあるだけでは PASS にしない。** `npm run verify:f2pool` と
+  Admin の TEST CONNECTION → ProviderCertification 記録をもって初めて達成
+
+## CODE READINESS Score: 96 / 100
 
 | カテゴリ | 配点 | 実点 | 根拠 |
 |---|---:|---:|---|
-| Architecture | 10 | 10 | Modular Monolith・アダプタ方式・Store 抽象・境界の明確さ |
-| Database | 10 | 9 | 36テーブル・初期マイグレーションSQL生成・exact Decimal・索引。PITR等は運用 |
-| Provider Integration | 20 | 16 | F2Pool 本番アダプタ完成・TEST CONNECTION・資格情報暗号化・接続モデル3種。**実キーでの疎通は未（MANUAL）** |
-| Accounting | 15 | 14 | satoshi 整数会計・複式元帳・配賦冪等3層・Reconciliation（1sat検知）。実 payout 実測突合は未 |
-| Security | 15 | 12 | 2FA/step-up/RBAC/CSRF/AES暗号化/秘密鍵ゼロ/マスク/sandbox。外部ペンテスト・共有レート制限は未 |
-| Monitoring | 10 | 9 | アラート11種・Metrics・Health・Reconciliation。通知先連携は運用 |
-| Testing | 10 | 9 | 189 ユニット + E2E fixture フロー。実 API smoke は opt-in |
-| Operations | 10 | 6 | doctor・worker・ロック・Rawスナップショット・ドキュメント。常駐cron/queue・リストア訓練は未 |
-| **合計** | **100** | **85** | |
+| Architecture | 10 | 10 | Modular Monolith・アダプタ・Store 抽象・scheduler 共通 Service |
+| Database | 10 | 10 | 40テーブル・初期migration SQL・exact Decimal・db:verify・BACKUP_RESTORE.md |
+| Provider Integration | 20 | 19 | F2Pool 本番アダプタ・TEST CONNECTION 6分類・暗号化 credential・Certification 記録・verify:f2pool・sourceMode 4区分。残1点=第2プールの実仕様突合 |
+| Accounting | 15 | 15 | satoshi bigint・複式元帳・冪等3層・**Safety Gate 6条件**・Reconciliation 1sat検知・ledger:verify・payout/txid/blockchain 検証 |
+| Security | 15 | 14 | 2FA/step-up/RBAC/CSRF/AES-GCM/秘密鍵ゼロ/マスク/redaction/**起動ガード(fail-fast)**/**demo-production 完全分離**。残1点=外部ペンテスト前提の設計余地 |
+| Monitoring | 10 | 10 | アラート15種・Metrics・Health・Dead Letter・WORKER_SYNC_MISMATCH・HASHRATE_DATA_ANOMALY |
+| Testing | 10 | 10 | 212 ユニット + E2E fixture + Gate/validation テスト。実 API は opt-in smoke |
+| Operations | 10 | 8 | doctor/worker/job(cron)/ledger:verify/db:verify/DeadLetter再実行/PILOT_MODE。残2点=リストア訓練・通知先接続は運用実施 |
+| **合計** | **100** | **96** | |
+
+## LIVE VERIFIED: 0 / 5（実接続後に評価）
+
+| # | 項目 | 状態 | 達成方法 |
+|---|---|---|---|
+| 1 | F2Pool 実疎通 | **未検証** | `LIVE_PROVIDER_TEST=true F2POOL_ACCOUNT_NAME=… npm run verify:f2pool` |
+| 2 | 実 Worker / Hashrate 取得 | **未検証** | 実 ASIC をプールへ接続 → TEST CONNECTION → worker sync |
+| 3 | 実 Payout 取り込み + blockchain 検証 | **未検証** | payout 発生後 sync-payouts → tx-verification |
+| 4 | 実 payout の配賦 → Ledger → Reconciliation PASS | **未検証** | Safety Gate 通過 → /admin/reconciliation |
+| 5 | 本番環境での起動ガード・PILOT 稼働 | **未検証** | NODE_ENV=production + PILOT_MODE=true でデプロイ |
 
 上から順に確認する。FAIL が残る項目は公開前に解消すること。
 

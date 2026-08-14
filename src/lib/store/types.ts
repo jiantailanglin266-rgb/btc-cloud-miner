@@ -13,6 +13,8 @@
 import type {
   AiInsight,
   Alert,
+  DeadLetterJob,
+  ProviderCertification,
   AuditLog,
   Contract,
   Earning,
@@ -186,6 +188,27 @@ export type Store = {
   /** 取得できたら true。他者が有効なロックを保持中なら false */
   acquireLock(key: string, holder: string, ttlMs: number): Promise<boolean>;
   releaseLock(key: string, holder: string): Promise<void>;
+
+  // --- Provider Certification（実疎通の証明記録） ---------------------------
+  insertCertification(cert: ProviderCertification): Promise<void>;
+  /** プロバイダーごとの最新 certification（providerId 省略で全件の最新順） */
+  listCertifications(
+    tenantId: string,
+    providerId?: string,
+    limit?: number,
+  ): Promise<ProviderCertification[]>;
+
+  // --- Dead Letter Job（最大試行後の失敗記録） ------------------------------
+  insertDeadLetter(job: DeadLetterJob): Promise<void>;
+  listDeadLetters(
+    tenantId: string,
+    filter?: { status?: DeadLetterJob["status"]; limit?: number },
+  ): Promise<DeadLetterJob[]>;
+  updateDeadLetter(
+    tenantId: string,
+    id: string,
+    patch: Partial<DeadLetterJob>,
+  ): Promise<DeadLetterJob | null>;
 
   // --- 通知・サポート・障害 -----------------------------------------------
   listNotifications(tenantId: string, userId: string): Promise<Notification[]>;

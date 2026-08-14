@@ -1,85 +1,54 @@
 /**
- * Background Sync Worker（フェーズ6）
+ * Background Sync Worker（フェーズ6・12）
  *
  *   npm run worker
  *
- * ブラウザアクセスに依存せず、定期的に:
- *   - worker 統計   （既定 60s）
- *   - pool payout + 配賦（既定 600s）
- *   - provider health（worker 同期に含む）
- * を同期する。全テナントを対象にする。
+ * scheduler 共通 Service（modules/scheduler）のジョブを推奨間隔で回す
+ * ローカル常駐プロセス。cron / cloud scheduler へ移行する場合は、
+ * 同じジョブを `npm run job -- <jobKind>` または HTTP で呼べばよい。
  *
- * 二重実行防止は store の同期ロックで担保されるため、複数プロセスを起動しても安全。
- * 将来は Cron / Queue / Cloud Scheduler がこのループの代わりに runWorkerSync を呼べばよい。
- *
- * ★ tsx で実行（tsconfig の @ エイリアスを解決）。
+ * 二重実行防止は store の同期ロックで担保されるため、多重起動しても安全。
  */
 
-import { getStore } from "@/lib/store";
-import { runWorkerSync, runPayoutSync } from "@/modules/mining/sync";
-import { config } from "@/lib/config";
-
-const WORKER_INTERVAL_MS = config.mining.syncIntervalSec * 1000;
-const PAYOUT_INTERVAL_MS = 10 * 60_000;
+import { runJobForAllTenants, JOB_INTERVALS, type JobKind } from "@/modules/scheduler";
 
 let stopping = false;
+const timers: NodeJS.Timeout[] = [];
 
-async function tenantIds(): Promise<string[]> {
-  const store = await getStore();
-  const tenants = await store.listTenants();
-  return tenants.map((t) => t.id);
-}
-
-async function workerCycle() {
+async function cycle(jobKind: JobKind) {
   if (stopping) return;
   try {
-    for (const tenantId of await tenantIds()) {
-      const r = await runWorkerSync(tenantId);
-      if (r.locked) {
-        console.info(
-          `[worker] ${tenantId} 同期: snapshots=${r.snapshots} raw=${r.rawRecorded} errors=${r.providerErrors} ${r.durationMs}ms`,
-        );
-      } else {
-        console.info(`[worker] ${tenantId} 同期スキップ（他プロセスが実行中）`);
-      }
+    const results = await runJobForAllTenants(jobKind);
+    for (const r of results) {
+      const mark = r.ok ? "OK " : "DEAD";
+      console.info(
+        `[worker] ${mark} ${jobKind} tenant=${r.tenantId} attempts=${r.attempts} ${r.summary}` +
+          (r.deadLetterId ? ` deadLetter=${r.deadLetterId}` : ""),
+      );
     }
   } catch (err) {
-    console.error("[worker] 統計同期でエラー:", err instanceof Error ? err.message : err);
-  }
-}
-
-async function payoutCycle() {
-  if (stopping) return;
-  try {
-    for (const tenantId of await tenantIds()) {
-      const r = await runPayoutSync(tenantId);
-      if (r.locked) {
-        console.info(
-          `[worker] ${tenantId} payout: saved=${r.saved} dup=${r.skippedDuplicates} allocated=${r.allocated} errors=${r.allocationErrors}`,
-        );
-      }
-    }
-  } catch (err) {
-    console.error("[worker] payout 同期でエラー:", err instanceof Error ? err.message : err);
+    console.error(`[worker] ${jobKind} 実行エラー:`, err instanceof Error ? err.message : err);
   }
 }
 
 async function main() {
+  const jobs = Object.entries(JOB_INTERVALS) as Array<[JobKind, number]>;
   console.info(
-    `[worker] 起動しました（worker=${WORKER_INTERVAL_MS / 1000}s / payout=${PAYOUT_INTERVAL_MS / 1000}s）`,
+    `[worker] 起動しました: ${jobs.map(([k, ms]) => `${k}@${ms / 1000}s`).join(" / ")}`,
   );
 
-  // 起動直後に 1 回実行
-  await workerCycle();
-  await payoutCycle();
+  // 起動直後に主要ジョブを 1 回実行
+  await cycle("sync-workers");
+  await cycle("sync-payouts");
+  await cycle("tx-verification");
 
-  const workerTimer = setInterval(workerCycle, WORKER_INTERVAL_MS);
-  const payoutTimer = setInterval(payoutCycle, PAYOUT_INTERVAL_MS);
+  for (const [jobKind, intervalMs] of jobs) {
+    timers.push(setInterval(() => cycle(jobKind), intervalMs));
+  }
 
   const shutdown = () => {
     stopping = true;
-    clearInterval(workerTimer);
-    clearInterval(payoutTimer);
+    for (const t of timers) clearInterval(t);
     console.info("[worker] 停止しました");
     process.exit(0);
   };

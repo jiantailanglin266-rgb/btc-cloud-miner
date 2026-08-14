@@ -80,6 +80,14 @@ function demoAddress(seed: string): string {
 }
 
 async function main() {
+  // ★ フェーズ15: production への demo seed 投入を構造的に禁止する
+  if (process.env.NODE_ENV === "production") {
+    console.error(
+      "NODE_ENV=production では demo seed を実行できません。\n" +
+        "本番の初期化は docs/管理者マニュアル.md §1 の手順（テナント・管理者のみ作成）に従ってください。",
+    );
+    process.exit(1);
+  }
   const rnd = mulberry32(20260808);
   const now = Date.now();
   const day = 86_400_000;

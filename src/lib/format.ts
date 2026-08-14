@@ -127,3 +127,17 @@ export function dataModeOf(freshness: {
   if (freshness.stale) return "STALE";
   return "LIVE";
 }
+
+/**
+ * sourceMode（フェーズ3）: 4区分の厳密な出所判定。
+ * ★ LIVE として扱ってよいのは LIVE_API のみ。FIXTURE / STALE_LIVE を LIVE と表示してはならない。
+ */
+export function sourceModeOf(freshness: {
+  source: string;
+  stale: boolean;
+}): "MOCK" | "FIXTURE" | "LIVE_API" | "STALE_LIVE" {
+  if (freshness.source.startsWith("mock")) return "MOCK";
+  if (freshness.source.startsWith("fixture")) return "FIXTURE";
+  if (freshness.stale) return "STALE_LIVE";
+  return "LIVE_API";
+}

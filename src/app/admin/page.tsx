@@ -4,9 +4,10 @@ import { getStore } from "@/lib/store";
 import { getProviderHealth, detectMockUsage } from "@/modules/provider/registry";
 import { buildDashboardSummary } from "@/modules/mining/aggregate";
 import { getWalletProvider } from "@/modules/wallet";
-import { Badge, Card, CardTitle, PageHeader, Stat, statusTone } from "@/components/ui";
+import { Badge, Card, CardTitle, KeyValue, PageHeader, Stat, statusTone } from "@/components/ui";
 import { formatHashrate, formatUsd, formatRelative, statusLabel } from "@/lib/format";
-import { assertProductionConfig, isDemoMode } from "@/lib/config";
+import { assertProductionConfig, config, isDemoMode } from "@/lib/config";
+import { toSat, fromSat } from "@/lib/decimal";
 
 export const metadata = { title: "管理ダッシュボード" };
 export const dynamic = "force-dynamic";
@@ -15,7 +16,7 @@ export default async function AdminOverviewPage() {
   const ctx = await requireSession();
   const store = await getStore();
 
-  const [users, withdrawals, providers, health, summary, incidents, audits, mockWarnings] =
+  const [users, withdrawals, providers, health, summary, incidents, audits, mockWarnings, certifications, payouts] =
     await Promise.all([
       store.listUsers(ctx.tenant.id),
       store.listWithdrawals(ctx.tenant.id),
@@ -26,7 +27,18 @@ export default async function AdminOverviewPage() {
       store.listIncidents(ctx.tenant.id),
       store.listAuditLogs(ctx.tenant.id, { limit: 8 }),
       detectMockUsage(ctx.tenant.id),
+      store.listCertifications(ctx.tenant.id, undefined, 1),
+      store.listPayouts(ctx.tenant.id, { limit: 200 }),
     ]);
+
+  // PILOT ダッシュボード用の集計（フェーズ20）
+  const lastCert = certifications[0] ?? null;
+  const allocatedSat = payouts
+    .filter((p) => p.allocationStatus === "ALLOCATED")
+    .reduce((s, p) => s + toSat(p.amountBtc), 0n);
+  const pendingReviewCount = payouts.filter(
+    (p) => p.allocationStatus === "PENDING_REVIEW",
+  ).length;
 
   const pending = withdrawals.filter(
     (w) => w.status === "PENDING_REVIEW" || w.status === "FLAGGED",
@@ -40,6 +52,69 @@ export default async function AdminOverviewPage() {
   return (
     <>
       <PageHeader title="管理ダッシュボード" description="全体の状況とアクションが必要な項目" />
+
+      {config.pilotMode && (
+        <Card className="mb-4 border-accent/50 bg-accent/5">
+          <CardTitle
+            action={
+              <Badge tone="accent" dot>
+                PILOT
+              </Badge>
+            }
+          >
+            Pilot Mode — 実収益管理の実証中（外部出金は無効）
+          </CardTitle>
+          <div className="grid gap-x-6 sm:grid-cols-2">
+            <div className="divide-y divide-line">
+              <KeyValue
+                label="Provider Certified"
+                value={
+                  lastCert && lastCert.result === "CONNECTED"
+                    ? `✓ ${formatRelative(lastCert.testedAt)}`
+                    : "未疎通（TEST CONNECTION を実行）"
+                }
+                tone={lastCert?.result === "CONNECTED" ? "pos" : "neg"}
+              />
+              <KeyValue
+                label="Live Workers"
+                value={`${summary.activeMiners} / ${summary.totalMiners} 台`}
+              />
+              <KeyValue label="Live Hashrate" value={formatHashrate(summary.currentHashrateThs, 1)} />
+              <KeyValue
+                label="Payouts Imported"
+                value={`${payouts.length} 件（保留 ${pendingReviewCount}）`}
+              />
+            </div>
+            <div className="divide-y divide-line">
+              <KeyValue label="Allocated BTC" value={`${fromSat(allocatedSat)} BTC`} tone="pos" />
+              <KeyValue
+                label="Ledger / Reconciliation"
+                value="管理メニューの「照合」「元帳」で確認"
+              />
+              <KeyValue
+                label="Withdrawal"
+                value="DISABLED（PILOT_MODE）"
+                tone="neg"
+              />
+            </div>
+          </div>
+        </Card>
+      )}
+
+      {lastCert && !config.pilotMode && (
+        <Card className="mb-4">
+          <CardTitle>LAST LIVE CERTIFICATION</CardTitle>
+          <p className="text-xs text-ink-muted">
+            {lastCert.result === "CONNECTED" ? "✓" : "✗"} {lastCert.providerKind}（
+            {lastCert.accountIdentifierMasked ?? "—"}）を {formatRelative(lastCert.testedAt)} に検証 —{" "}
+            {lastCert.result}
+            {lastCert.workerCount !== null && ` / workers ${lastCert.workerCount}`}
+            {lastCert.hashrateThs !== null && ` / ${lastCert.hashrateThs.toFixed(1)} TH/s`}
+            {lastCert.latencyMs !== null && ` / ${lastCert.latencyMs}ms`}
+            {` / ${lastCert.environment} @ v${lastCert.codeVersion}`}
+          </p>
+        </Card>
+      )}
 
       {(isDemoMode() || !walletProvider.isLive || mockWarnings.length > 0) && (
         <Card className="mb-4 border-purple-400/40 bg-purple-400/5">

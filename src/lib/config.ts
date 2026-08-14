@@ -92,6 +92,13 @@ export const config = {
     electricityPriceKwh: num("DEFAULT_ELECTRICITY_PRICE_KWH", 0.06),
   },
 
+  /**
+   * Pilot Mode（フェーズ19）:
+   * 実 Mining data・実 Pool balance・実 Payout は使用可能だが、
+   * 外部出金（withdrawal）を全面禁止する。実 BTC 収益管理だけを安全に実証するモード。
+   */
+  pilotMode: bool("PILOT_MODE", false),
+
   adminIpAllowlist: (process.env.ADMIN_IP_ALLOWLIST || "")
     .split(",")
     .map((s) => s.trim())
@@ -118,6 +125,28 @@ export function isDemoMode(): boolean {
  * 起動時の構成チェック。
  * 本番で Mock / 開発用鍵が使われていたら大きく警告する（黙って動かさない）。
  */
+/**
+ * Deployment Safety（フェーズ14）:
+ * 本番起動時の致命的な設定不備。これらは警告でなく「起動拒否レベル」として扱う。
+ * 呼び出し側（instrumentation / doctor）は fatal が 1 つでもあれば起動を止めるか
+ * 大きく警告する。
+ */
+export function assertProductionFatal(): string[] {
+  const fatal: string[] = [];
+  if (!config.isProduction) return fatal;
+
+  if (!config.databaseUrl) {
+    fatal.push("DATABASE_URL が未設定です（本番でインメモリは禁止）");
+  }
+  if (!config.encryptionKey) {
+    fatal.push("ENCRYPTION_KEY が未設定です（開発用固定鍵での本番稼働は禁止）");
+  }
+  if (config.wallet.providerMode === "live" && !config.wallet.custodyApiUrl) {
+    fatal.push("WALLET_PROVIDER_MODE=live ですが CUSTODY_API_URL が未設定です");
+  }
+  return fatal;
+}
+
 export function assertProductionConfig(): string[] {
   const warnings: string[] = [];
   if (!config.isProduction) return warnings;

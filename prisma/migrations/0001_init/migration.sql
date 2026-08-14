@@ -313,6 +313,10 @@ CREATE TABLE "pool_payouts" (
     "fetchedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "allocationStatus" TEXT NOT NULL DEFAULT 'UNALLOCATED',
     "allocatedAt" TIMESTAMP(3),
+    "reviewReason" TEXT,
+    "verificationStatus" TEXT NOT NULL DEFAULT 'NOT_APPLICABLE',
+    "confirmations" INTEGER,
+    "verifiedAt" TIMESTAMP(3),
 
     CONSTRAINT "pool_payouts_pkey" PRIMARY KEY ("id")
 );
@@ -339,6 +343,41 @@ CREATE TABLE "sync_locks" (
     "expiresAt" TIMESTAMP(3) NOT NULL,
 
     CONSTRAINT "sync_locks_pkey" PRIMARY KEY ("key")
+);
+
+-- CreateTable
+CREATE TABLE "provider_certifications" (
+    "id" TEXT NOT NULL,
+    "tenantId" TEXT NOT NULL,
+    "providerId" TEXT NOT NULL,
+    "providerKind" TEXT NOT NULL,
+    "accountIdentifierMasked" TEXT,
+    "testedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "workerCount" INTEGER,
+    "hashrateThs" DECIMAL(14,4),
+    "balanceSatoshi" BIGINT,
+    "latencyMs" INTEGER,
+    "result" TEXT NOT NULL,
+    "codeVersion" TEXT NOT NULL DEFAULT '',
+    "environment" TEXT NOT NULL DEFAULT '',
+
+    CONSTRAINT "provider_certifications_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "dead_letter_jobs" (
+    "id" TEXT NOT NULL,
+    "tenantId" TEXT NOT NULL,
+    "jobKind" TEXT NOT NULL,
+    "payload" JSONB NOT NULL DEFAULT '{}',
+    "attempts" INTEGER NOT NULL DEFAULT 0,
+    "lastError" TEXT NOT NULL DEFAULT '',
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "retriedAt" TIMESTAMP(3),
+    "retriedBy" TEXT,
+    "status" TEXT NOT NULL DEFAULT 'DEAD',
+
+    CONSTRAINT "dead_letter_jobs_pkey" PRIMARY KEY ("id")
 );
 
 -- CreateTable
@@ -542,6 +581,12 @@ CREATE INDEX "raw_provider_snapshots_tenantId_providerId_fetchedAt_idx" ON "raw_
 CREATE INDEX "sync_locks_expiresAt_idx" ON "sync_locks"("expiresAt");
 
 -- CreateIndex
+CREATE INDEX "provider_certifications_tenantId_providerId_testedAt_idx" ON "provider_certifications"("tenantId", "providerId", "testedAt");
+
+-- CreateIndex
+CREATE INDEX "dead_letter_jobs_tenantId_status_createdAt_idx" ON "dead_letter_jobs"("tenantId", "status", "createdAt");
+
+-- CreateIndex
 CREATE INDEX "alerts_tenantId_acknowledgedAt_createdAt_idx" ON "alerts"("tenantId", "acknowledgedAt", "createdAt");
 
 -- CreateIndex
@@ -618,14 +663,4 @@ ALTER TABLE "notifications" ADD CONSTRAINT "notifications_userId_fkey" FOREIGN K
 
 -- AddForeignKey
 ALTER TABLE "support_tickets" ADD CONSTRAINT "support_tickets_userId_fkey" FOREIGN KEY ("userId") REFERENCES "users"("id") ON DELETE CASCADE ON UPDATE CASCADE;
-┌─────────────────────────────────────────────────────────┐
-│  Update available 6.19.3 -> 7.9.1                       │
-│                                                         │
-│  This is a major update - please follow the guide at    │
-│  https://pris.ly/d/major-version-upgrade                │
-│                                                         │
-│  Run the following to update                            │
-│    npm i --save-dev prisma@latest                       │
-│    npm i @prisma/client@latest                          │
-└─────────────────────────────────────────────────────────┘
 

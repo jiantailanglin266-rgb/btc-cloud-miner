@@ -28,6 +28,7 @@ import { CustomerOwnedMinerAdapter } from "./adapters/customer-owned";
 import { getBreaker, CircuitOpenError } from "@/lib/circuit-breaker";
 import { getStore } from "@/lib/store";
 import { config } from "@/lib/config";
+import { validatePayout, isValidTxid } from "@/modules/mining/validation";
 
 /**
  * 新しいプロバイダー種別を追加するときは、ここに 1 行足すだけでよい。
@@ -256,6 +257,25 @@ export async function syncPayouts(
     try {
       const raw = await breakerFor(provider).run(() => adapter.getPayoutHistory!(sinceMs));
       for (const p of raw) {
+        // ★ フェーズ7: 取り込み前検証（txid 形式・金額・未来日時）。
+        //   不正 payout は保存せず、アラートで人間に知らせる（黙って捨てない）
+        const validation = validatePayout(p);
+        if (!validation.valid) {
+          const { raiseAlert } = await import("@/modules/monitoring/alerts");
+          await raiseAlert(tenantId, {
+            kind: "PAYOUT_VALIDATION_FAILED",
+            severity: "CRITICAL",
+            message: `${provider.name} の payout が検証に失敗: ${validation.reasons.join(" / ")}`,
+            evidence: {
+              providerId: provider.id,
+              externalPayoutId: p.externalPayoutId.slice(0, 60),
+              reasons: validation.reasons.join(" / "),
+            },
+            targetType: "provider",
+            targetId: provider.id,
+          });
+          continue;
+        }
         const inserted = await store.insertPayout({
           id: `po-${provider.id}-${p.externalPayoutId}`.replace(/[^a-zA-Z0-9_-]/g, "_"),
           tenantId,
@@ -268,6 +288,11 @@ export async function syncPayouts(
           fetchedAt: new Date().toISOString(),
           allocationStatus: "UNALLOCATED",
           allocatedAt: null,
+          reviewReason: null,
+          // txid があれば要検証、無ければ検証対象外（Mock 等）
+          verificationStatus: isValidTxid(p.txId) ? "VERIFICATION_PENDING" : "NOT_APPLICABLE",
+          confirmations: null,
+          verifiedAt: null,
         });
         if (inserted) saved++;
         else skippedDuplicates++;

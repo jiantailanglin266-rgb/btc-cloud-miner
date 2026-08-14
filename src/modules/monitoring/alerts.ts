@@ -267,4 +267,8 @@ export const ALERT_LABEL_JA: Record<AlertKind, string> = {
   DUPLICATE_PAYOUT: "payout二重配賦の試行",
   LEDGER_IMBALANCE: "元帳不整合",
   LIVE_CONNECTION_FAILED: "LIVE接続失敗",
+  WORKER_SYNC_MISMATCH: "ワーカー同期差異",
+  HASHRATE_DATA_ANOMALY: "ハッシュレート異常値",
+  PAYOUT_VALIDATION_FAILED: "payout検証失敗",
+  ALLOCATION_GATE_BLOCKED: "配賦ゲート不通過",
 };

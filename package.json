@@ -19,6 +19,10 @@
     "worker": "tsx scripts/worker.ts",
     "doctor": "tsx scripts/doctor.ts",
     "smoke:live": "tsx scripts/live-smoke.ts",
+    "verify:f2pool": "tsx scripts/verify-f2pool.ts",
+    "ledger:verify": "tsx scripts/ledger-verify.ts",
+    "db:verify": "tsx scripts/db-verify.ts",
+    "job": "tsx scripts/run-job.ts",
     "demo:build": "node scripts/build-demo.mjs"
   },
   "dependencies": {
