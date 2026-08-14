@@ -5,6 +5,7 @@ import { getWalletProvider } from "@/modules/wallet";
 import { getStore } from "@/lib/store";
 import { cache } from "@/lib/cache";
 import { allBreakers } from "@/lib/circuit-breaker";
+import { snapshotMetrics } from "@/modules/monitoring/metrics";
 import { Badge, Card, CardTitle, KeyValue, PageHeader, statusTone } from "@/components/ui";
 import { formatRelative, statusLabel } from "@/lib/format";
 
@@ -14,12 +15,24 @@ export const dynamic = "force-dynamic";
 export default async function AdminHealthPage() {
   const ctx = await requireSession();
   const store = await getStore();
-  const [providers, { network, price }, walletHealth] = await Promise.all([
+  const [providers, { network, price }, walletHealth, allProviders] = await Promise.all([
     getProviderHealth(ctx.tenant.id),
     getNetworkAndPrice(),
     getWalletProvider().healthCheck(),
+    store.listProviders(ctx.tenant.id),
   ]);
   const breakers = allBreakers();
+  const metrics = snapshotMetrics();
+
+  // 背景 worker の同期状況（最も新しい lastSyncAt を代表値にする）
+  const lastSyncAt = allProviders
+    .map((p) => p.lastSyncAt)
+    .filter((s): s is string => Boolean(s))
+    .sort()
+    .at(-1);
+  const workerFresh = lastSyncAt
+    ? Date.now() - new Date(lastSyncAt).getTime() < 10 * 60_000
+    : false;
 
   return (
     <>
@@ -48,6 +61,13 @@ export default async function AdminHealthPage() {
               tone={getWalletProvider().isLive ? "pos" : undefined}
             />
             <KeyValue label="ウォレット疎通" value={walletHealth.message ?? "OK"} />
+            <KeyValue
+              label="Background Worker"
+              value={
+                lastSyncAt ? `最終同期 ${formatRelative(lastSyncAt)}` : "未同期（npm run worker）"
+              }
+              tone={workerFresh ? "pos" : lastSyncAt ? "neg" : "muted"}
+            />
           </div>
         </Card>
 
@@ -161,6 +181,44 @@ export default async function AdminHealthPage() {
                     </tr>
                   );
                 })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Card>
+
+      <Card className="mt-4">
+        <CardTitle hint="プロセス内カウンタ/ゲージ（本番は OpenTelemetry / Prometheus へ）">
+          Operational Metrics
+        </CardTitle>
+        {metrics.length === 0 ? (
+          <p className="text-xs text-ink-muted">
+            まだメトリクスが記録されていません（同期を実行すると蓄積されます）。
+          </p>
+        ) : (
+          <div className="scroll-x">
+            <table>
+              <thead>
+                <tr>
+                  <th>メトリクス</th>
+                  <th>直近値</th>
+                  <th>累計</th>
+                  <th>回数</th>
+                  <th>更新</th>
+                </tr>
+              </thead>
+              <tbody>
+                {metrics.map((m) => (
+                  <tr key={m.name}>
+                    <td>
+                      <code className="text-[11px]">{m.name}</code>
+                    </td>
+                    <td>{m.last}</td>
+                    <td className="text-ink-muted">{m.total}</td>
+                    <td className="text-ink-dim">{m.count}</td>
+                    <td className="text-[11px] text-ink-dim">{formatRelative(m.updatedAt)}</td>
+                  </tr>
+                ))}
               </tbody>
             </table>
           </div>

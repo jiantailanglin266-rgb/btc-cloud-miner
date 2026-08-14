@@ -102,6 +102,7 @@ export class ProviderAAdapter implements MiningProviderAdapter {
         minerId: String(w.miner_serial ?? ""),
         model: String(w.model ?? "unknown"),
         hashrateThs: safeNumber(w.hashrate_ths, { max: 1e9 }),
+        hashrate1hThs: safeNullableNumber(w.hashrate_1h_ths, { min: 0, max: 1e9 }),
         ratedHashrateThs: safeNumber(w.rated_hashrate_ths, { max: 1e9 }),
         ratedEfficiencyJPerTh: safeNumber(w.efficiency_j_per_th, { max: 1000 }),
         acceptedShares: safeNumber(w.accepted_shares, { max: 1e15 }),
@@ -111,6 +112,10 @@ export class ProviderAAdapter implements MiningProviderAdapter {
         uptimeSec: safeNumber(w.uptime_sec, { max: 1e9 }),
         poolStatus: String(w.pool_status ?? "unknown"),
         workerStatus: normalizeWorkerStatus(String(w.status ?? "")),
+        lastShareAt:
+          typeof w.last_share_at === "string" && Number.isFinite(Date.parse(w.last_share_at))
+            ? new Date(w.last_share_at).toISOString()
+            : null,
         estimatedEarningsBtc:
           typeof w.estimated_earnings_btc === "string" ? w.estimated_earnings_btc : null,
       };

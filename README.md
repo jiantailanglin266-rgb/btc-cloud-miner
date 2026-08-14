@@ -89,13 +89,50 @@ Browser ── HTTPS/SSE ──▶ Next.js 16 (App Router)
 | [OPERATIONS.md](./OPERATIONS.md) | 運用手順・障害対応ランブック |
 | [docs/](./docs/) | ER図・画面設計・ロードマップ・外部依存・コスト・法規制・マニュアル類 |
 
+## 実データ End-to-End フロー
+
+実 ASIC がプールに接続されると、以下が自動処理される（実 BTC 送金のみ既定 OFF）:
+
+```
+REAL ASIC / Mining Farm
+   │ （プール側で採掘・shares 提出）
+   ▼
+REAL MINING POOL (F2Pool 等)
+   │ Pool REST API / Stratum(監視)
+   ▼
+Provider Adapter (F2PoolAdapter) ── credentialsEnc を復号して read-only 取得
+   │ fetchWorkers / getPayoutHistory / getPoolBalance
+   ▼
+Background Worker (npm run worker) ── 同期ロックで二重実行を排除
+   ├─▶ Worker upsert + WorkerSnapshot 保存（hashrate/1h/24h/shares/lastShare/source）
+   ├─▶ RawProviderSnapshot 記録（sanitized）
+   ├─▶ PoolPayout 保存（UNIQUE(providerId, externalPayoutId) で冪等）
+   ▼
+Revenue Allocation ── 実測 hashrate 比で satoshi 按分（Estimated は Ledger へ入れない）
+   ▼
+User Ledger (複式・追記専用) ── MINING_REWARD / PLATFORM_FEE ...
+   ▼
+User BTC Balance (元帳の合計として導出)
+   ▼
+Reconciliation ── Pool Payout と Ledger を satoshi 照合（1sat ズレで CRITICAL）
+   ▼
+Withdrawal Request → 2FA/4-eyes 承認 → [mock|sandbox|live] 送金
+                                          （live=カストディ。既定は mock/sandbox）
+```
+
+Dashboard には各値の LIVE / STALE / MOCK と Provider / Last Sync / Latency を明示。
+`MINING_PROVIDER_MODE=live` で実プロバイダー未接続なら **LIVE CONNECTION FAILED**（無言 Mock フォールバックしない）。
+
 ## コマンド
 
 ```bash
 npm run dev          # 開発サーバー
 npm run build        # 本番ビルド
-npm test             # ユニットテスト（127件）
+npm test             # ユニットテスト（189件）
 npm run typecheck    # 型チェック
+npm run doctor       # 本番前 CLI 診断（PASS/WARN/FAIL）
+npm run worker       # 背景同期ワーカー（worker統計/payout/配賦を定期実行）
+npm run smoke:live   # LIVE_PROVIDER_TEST=true のときのみ実プールへ read-only 疎通
 npm run lint         # ESLint
 
 # PostgreSQL を使う場合（.env.local に DATABASE_URL を設定後）

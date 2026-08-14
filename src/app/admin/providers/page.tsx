@@ -3,6 +3,7 @@ import { getStore } from "@/lib/store";
 import { getProviderHealth } from "@/modules/provider/registry";
 import { isReadOnly } from "@/modules/auth/rbac";
 import { ProviderPanel } from "./ProviderPanel";
+import { AddProvider } from "./AddProvider";
 import { Card, CardTitle, PageHeader } from "@/components/ui";
 
 export const metadata = { title: "プロバイダー管理" };
@@ -22,6 +23,8 @@ export default async function AdminProvidersPage() {
         title="プロバイダー管理"
         description="外部マイニング設備・プールとの接続の管理"
       />
+
+      {!isReadOnly(ctx.user) && <AddProvider />}
 
       <Card className="mb-4">
         <CardTitle>新しいプロバイダーを追加するには</CardTitle>

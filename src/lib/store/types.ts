@@ -23,6 +23,7 @@ import type {
   Notification,
   Plan,
   PoolPayout,
+  RawProviderSnapshot,
   Session,
   SupportTicket,
   Tenant,
@@ -172,6 +173,19 @@ export type Store = {
     filter?: { unacknowledgedOnly?: boolean; limit?: number },
   ): Promise<Alert[]>;
   acknowledgeAlert(tenantId: string, id: string, userId: string): Promise<void>;
+
+  // --- Raw プロバイダースナップショット（デバッグ用・sanitize 済み） -------
+  insertRawSnapshot(snapshot: RawProviderSnapshot): Promise<void>;
+  listRawSnapshots(
+    tenantId: string,
+    providerId?: string,
+    limit?: number,
+  ): Promise<RawProviderSnapshot[]>;
+
+  // --- 同期ロック（TTL 付き。二重同期・二重 payout の防止） -----------------
+  /** 取得できたら true。他者が有効なロックを保持中なら false */
+  acquireLock(key: string, holder: string, ttlMs: number): Promise<boolean>;
+  releaseLock(key: string, holder: string): Promise<void>;
 
   // --- 通知・サポート・障害 -----------------------------------------------
   listNotifications(tenantId: string, userId: string): Promise<Notification[]>;

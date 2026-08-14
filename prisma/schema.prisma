@@ -241,11 +241,19 @@ model MiningProvider {
   endpoint String?
   /// Secrets Manager のキー名のみ。認証情報の値は絶対に保存しない
   credentialsRef String?
+  /// AES-256-GCM で暗号化した資格情報（enc:v1:...）。平文は保存しない
+  credentialsEnc String?
+  /// ワーカー名 → ユーザー契約の紐付けプレフィックス
+  workerPrefix   String?
   /// ONLINE | DEGRADED | OFFLINE | MAINTENANCE
   status               String    @default("OFFLINE")
   lastOkAt             DateTime?
   lastError            String?
   consecutiveFailures  Int       @default(0)
+  /// 直近同期のプール API 応答時間(ms)
+  lastLatencyMs        Int?
+  /// 直近でワーカー統計を同期した時刻
+  lastSyncAt           DateTime?
   priority             Int       @default(1)
   enabled              Boolean   @default(true)
   poolName             String    @default("")
@@ -288,6 +296,7 @@ model WorkerSnapshot {
   tenantId             String
   bucketAt             DateTime
   hashrateThs          Decimal  @db.Decimal(14, 4)
+  hashrate1hThs        Decimal? @db.Decimal(14, 4)
   acceptedShares       BigInt   @default(0)
   rejectedShares       BigInt   @default(0)
   temperatureC         Decimal? @db.Decimal(6, 2)
@@ -295,6 +304,8 @@ model WorkerSnapshot {
   uptimeSec            BigInt   @default(0)
   poolStatus           String   @default("")
   workerStatus         String   @default("UNKNOWN")
+  lastShareAt          DateTime?
+  source               String   @default("")
   estimatedEarningsBtc Decimal? @db.Decimal(18, 10)
 
   worker Worker @relation(fields: [workerId], references: [id], onDelete: Cascade)
@@ -442,6 +453,34 @@ model PoolPayout {
   @@unique([providerId, externalPayoutId])
   @@index([tenantId, allocationStatus, paidAt])
   @@map("pool_payouts")
+}
+
+/// プロバイダー API の生レスポンス記録（sanitize 済み。API Key/Auth/Cookie/Secret は保存しない）
+model RawProviderSnapshot {
+  id               String   @id
+  tenantId         String
+  providerId       String
+  endpoint         String
+  statusCode       Int
+  /// 生ペイロードの SHA-256（本文は保存しない。変化検知のみ）
+  payloadHash      String
+  /// 正規化後の要約（機微情報を含まない）
+  normalizedResult Json     @default("{}")
+  fetchedAt        DateTime @default(now())
+
+  @@index([tenantId, providerId, fetchedAt])
+  @@map("raw_provider_snapshots")
+}
+
+/// 同期ロック（TTL 付き。二重同期・二重 payout・二重 Ledger の防止）
+model SyncLock {
+  key        String   @id
+  holder     String
+  acquiredAt DateTime @default(now())
+  expiresAt  DateTime
+
+  @@index([expiresAt])
+  @@map("sync_locks")
 }
 
 /// 監視アラート

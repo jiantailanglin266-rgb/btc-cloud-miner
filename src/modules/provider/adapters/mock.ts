@@ -145,6 +145,7 @@ export class MockMiningProviderAdapter implements MiningProviderAdapter {
         minerId: spec.minerId,
         model: spec.model,
         hashrateThs: Math.round(hashrate * 100) / 100,
+        hashrate1hThs: Math.round(hashrate * 0.99 * 100) / 100,
         ratedHashrateThs: spec.ratedHashrateThs,
         ratedEfficiencyJPerTh: spec.ratedEfficiencyJPerTh,
         acceptedShares: accepted,
@@ -154,6 +155,9 @@ export class MockMiningProviderAdapter implements MiningProviderAdapter {
         uptimeSec: Math.floor(uptimeRate * 30 * 86_400),
         poolStatus: spec.forcedOffline ? "disconnected" : "connected",
         workerStatus: spec.forcedOffline ? "OFFLINE" : hashrate > 0 ? "ACTIVE" : "OFFLINE",
+        lastShareAt: spec.forcedOffline
+          ? new Date(now - 23 * 60_000).toISOString()
+          : new Date(now - 20_000).toISOString(),
         estimatedEarningsBtc: null,
       };
     });

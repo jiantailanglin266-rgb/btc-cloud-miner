@@ -24,7 +24,9 @@ import type {
   Notification,
   Plan,
   PoolPayout,
+  RawProviderSnapshot,
   Session,
+  SyncLock,
   SupportTicket,
   Tenant,
   TenantSettings,
@@ -84,6 +86,8 @@ type Db = {
   insights: AiInsight[];
   payouts: PoolPayout[];
   alerts: Alert[];
+  rawSnapshots: RawProviderSnapshot[];
+  locks: Map<string, SyncLock>;
 };
 
 const DEFAULT_TENANT_ID = "tenant-default";
@@ -133,6 +137,8 @@ function buildSeed(): Db {
     insights: [],
     payouts: [],
     alerts: [],
+    rawSnapshots: [],
+    locks: new Map(),
   };
 
   // --- テナント ------------------------------------------------------------
@@ -328,58 +334,60 @@ function buildSeed(): Db {
   db.contracts.push(contract);
 
   // --- プロバイダー --------------------------------------------------------
+  const mkProvider = (over: Partial<MiningProvider> & Pick<MiningProvider, "id" | "kind" | "name">): MiningProvider => ({
+    tenantId: DEFAULT_TENANT_ID,
+    region: "-",
+    endpoint: null,
+    credentialsRef: null,
+    credentialsEnc: null,
+    workerPrefix: null,
+    status: "ONLINE",
+    lastOkAt: null,
+    lastError: null,
+    consecutiveFailures: 0,
+    lastLatencyMs: null,
+    lastSyncAt: null,
+    priority: 1,
+    enabled: true,
+    poolName: "",
+    payoutScheme: "FPPS",
+    ...over,
+  });
   db.providers.push(
-    {
+    mkProvider({
       id: "provider-mock-01",
-      tenantId: DEFAULT_TENANT_ID,
       kind: "MOCK",
       name: "Demo Farm Reykjavik",
       region: "IS-1",
-      endpoint: null,
-      credentialsRef: null,
-      status: "ONLINE",
       lastOkAt: iso(now - 60_000),
-      lastError: null,
-      consecutiveFailures: 0,
-      priority: 1,
-      enabled: true,
+      lastLatencyMs: 12,
+      lastSyncAt: iso(now - 60_000),
       poolName: "demo-pool-eu",
-      payoutScheme: "FPPS",
-    },
-    {
+    }),
+    mkProvider({
       id: "provider-mock-02",
-      tenantId: DEFAULT_TENANT_ID,
       kind: "MOCK",
       name: "Demo Farm Texas",
       region: "US-TX-2",
-      endpoint: null,
-      credentialsRef: null,
       status: "DEGRADED",
       lastOkAt: iso(now - 12 * 60_000),
       lastError: "upstream latency 4210ms",
       consecutiveFailures: 2,
+      lastLatencyMs: 4210,
+      lastSyncAt: iso(now - 12 * 60_000),
       priority: 2,
-      enabled: true,
       poolName: "demo-pool-us",
       payoutScheme: "PPS_PLUS",
-    },
-    {
+    }),
+    mkProvider({
       id: "provider-pool-01",
-      tenantId: DEFAULT_TENANT_ID,
       kind: "POOL_REST",
       name: "Pool REST (未接続)",
-      region: "-",
-      endpoint: null,
       credentialsRef: "btc-cloud-miner/pool/api-key",
       status: "MAINTENANCE",
-      lastOkAt: null,
-      lastError: null,
-      consecutiveFailures: 0,
       priority: 3,
       enabled: false,
-      poolName: "-",
-      payoutScheme: "FPPS",
-    },
+    }),
   );
 
   // --- ワーカー ------------------------------------------------------------
@@ -1178,6 +1186,42 @@ export const memoryStore: Store = {
       a.acknowledgedAt = new Date().toISOString();
       a.acknowledgedBy = userId;
     }
+  },
+
+  // --- Raw スナップショット -------------------------------------------------
+  async insertRawSnapshot(snapshot) {
+    db.rawSnapshots.push(snapshot);
+    // 直近 500 件のみ保持（デバッグ用途なので上限を設ける）
+    if (db.rawSnapshots.length > 500) db.rawSnapshots.splice(0, db.rawSnapshots.length - 500);
+  },
+  async listRawSnapshots(tenantId, providerId, limit = 50) {
+    return clone(
+      db.rawSnapshots
+        .filter((s) => s.tenantId === tenantId && (!providerId || s.providerId === providerId))
+        .sort((a, b) => b.fetchedAt.localeCompare(a.fetchedAt))
+        .slice(0, limit),
+    );
+  },
+
+  // --- 同期ロック（TTL 付き。二重同期・二重 payout の防止） -----------------
+  async acquireLock(key, holder, ttlMs) {
+    const now = Date.now();
+    const existing = db.locks.get(key);
+    // 有効なロックが他者に握られていれば取得失敗
+    if (existing && new Date(existing.expiresAt).getTime() > now && existing.holder !== holder) {
+      return false;
+    }
+    db.locks.set(key, {
+      key,
+      holder,
+      acquiredAt: new Date(now).toISOString(),
+      expiresAt: new Date(now + ttlMs).toISOString(),
+    });
+    return true;
+  },
+  async releaseLock(key, holder) {
+    const existing = db.locks.get(key);
+    if (existing && existing.holder === holder) db.locks.delete(key);
   },
 };
 

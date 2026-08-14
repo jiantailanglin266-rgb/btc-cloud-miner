@@ -16,6 +16,9 @@
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate deploy",
     "prisma:seed": "tsx prisma/seed.ts",
+    "worker": "tsx scripts/worker.ts",
+    "doctor": "tsx scripts/doctor.ts",
+    "smoke:live": "tsx scripts/live-smoke.ts",
     "demo:build": "node scripts/build-demo.mjs"
   },
   "dependencies": {

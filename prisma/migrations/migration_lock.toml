@@ -1,0 +1,2 @@
+# Prisma Migrate のロックファイル。プロバイダーを固定する。
+provider = "postgresql"

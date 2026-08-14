@@ -25,7 +25,9 @@ import type {
   Notification,
   Plan,
   PoolPayout,
+  RawProviderSnapshot,
   Session,
+  SyncLock,
   SupportTicket,
   SupportMessage,
   Tenant,
@@ -256,10 +258,14 @@ function mapProvider(r: any): MiningProvider {
     region: r.region,
     endpoint: r.endpoint,
     credentialsRef: r.credentialsRef,
+    credentialsEnc: r.credentialsEnc ?? null,
+    workerPrefix: r.workerPrefix ?? null,
     status: r.status,
     lastOkAt: iso(r.lastOkAt),
     lastError: r.lastError,
     consecutiveFailures: r.consecutiveFailures,
+    lastLatencyMs: r.lastLatencyMs ?? null,
+    lastSyncAt: iso(r.lastSyncAt),
     priority: r.priority,
     enabled: r.enabled,
     poolName: r.poolName,
@@ -288,6 +294,7 @@ function mapSnapshot(r: any): WorkerSnapshot {
     tenantId: r.tenantId,
     bucketAt: isoReq(r.bucketAt),
     hashrateThs: num(r.hashrateThs),
+    hashrate1hThs: numOrNull(r.hashrate1hThs),
     acceptedShares: Number(r.acceptedShares),
     rejectedShares: Number(r.rejectedShares),
     temperatureC: numOrNull(r.temperatureC),
@@ -295,6 +302,8 @@ function mapSnapshot(r: any): WorkerSnapshot {
     uptimeSec: Number(r.uptimeSec),
     poolStatus: r.poolStatus,
     workerStatus: r.workerStatus,
+    lastShareAt: iso(r.lastShareAt),
+    source: r.source ?? "",
     estimatedEarningsBtc: r.estimatedEarningsBtc ? btc(r.estimatedEarningsBtc) : null,
   };
 }
@@ -805,10 +814,14 @@ export async function createPrismaStore(): Promise<Store> {
         region: provider.region,
         endpoint: provider.endpoint,
         credentialsRef: provider.credentialsRef,
+        credentialsEnc: provider.credentialsEnc,
+        workerPrefix: provider.workerPrefix,
         status: provider.status,
         lastOkAt: provider.lastOkAt ? new Date(provider.lastOkAt) : null,
         lastError: provider.lastError,
         consecutiveFailures: provider.consecutiveFailures,
+        lastLatencyMs: provider.lastLatencyMs,
+        lastSyncAt: provider.lastSyncAt ? new Date(provider.lastSyncAt) : null,
         priority: provider.priority,
         enabled: provider.enabled,
         poolName: provider.poolName,
@@ -837,6 +850,15 @@ export async function createPrismaStore(): Promise<Store> {
           ...(patch.consecutiveFailures !== undefined && {
             consecutiveFailures: patch.consecutiveFailures,
           }),
+          ...(patch.lastLatencyMs !== undefined && { lastLatencyMs: patch.lastLatencyMs }),
+          ...(patch.lastSyncAt !== undefined && {
+            lastSyncAt: patch.lastSyncAt ? new Date(patch.lastSyncAt) : null,
+          }),
+          ...(patch.credentialsEnc !== undefined && { credentialsEnc: patch.credentialsEnc }),
+          ...(patch.credentialsRef !== undefined && { credentialsRef: patch.credentialsRef }),
+          ...(patch.workerPrefix !== undefined && { workerPrefix: patch.workerPrefix }),
+          ...(patch.endpoint !== undefined && { endpoint: patch.endpoint }),
+          ...(patch.name !== undefined && { name: patch.name }),
         },
       });
       return mapProvider(r);
@@ -889,6 +911,7 @@ export async function createPrismaStore(): Promise<Store> {
           tenantId,
           bucketAt: new Date(s.bucketAt),
           hashrateThs: s.hashrateThs,
+          hashrate1hThs: s.hashrate1hThs,
           acceptedShares: BigInt(Math.floor(s.acceptedShares)),
           rejectedShares: BigInt(Math.floor(s.rejectedShares)),
           temperatureC: s.temperatureC,
@@ -896,6 +919,8 @@ export async function createPrismaStore(): Promise<Store> {
           uptimeSec: BigInt(Math.floor(s.uptimeSec)),
           poolStatus: s.poolStatus,
           workerStatus: s.workerStatus,
+          lastShareAt: s.lastShareAt ? new Date(s.lastShareAt) : null,
+          source: s.source,
           estimatedEarningsBtc: s.estimatedEarningsBtc,
         })),
         skipDuplicates: true,
@@ -1209,6 +1234,68 @@ export async function createPrismaStore(): Promise<Store> {
         where: { id, tenantId, acknowledgedAt: null },
         data: { acknowledgedAt: new Date(), acknowledgedBy: userId },
       });
+    },
+
+    // --- Raw スナップショット ----------------------------------------------
+    async insertRawSnapshot(snapshot) {
+      await prisma.rawProviderSnapshot.create({
+        data: {
+          id: snapshot.id,
+          tenantId: snapshot.tenantId,
+          providerId: snapshot.providerId,
+          endpoint: snapshot.endpoint,
+          statusCode: snapshot.statusCode,
+          payloadHash: snapshot.payloadHash,
+          normalizedResult: snapshot.normalizedResult as unknown as object,
+          fetchedAt: new Date(snapshot.fetchedAt),
+        },
+      });
+    },
+    async listRawSnapshots(tenantId, providerId, limit = 50) {
+      return (
+        await prisma.rawProviderSnapshot.findMany({
+          where: { tenantId, ...(providerId ? { providerId } : {}) },
+          orderBy: { fetchedAt: "desc" },
+          take: limit,
+        })
+      ).map(
+        (r): RawProviderSnapshot => ({
+          id: r.id,
+          tenantId: r.tenantId,
+          providerId: r.providerId,
+          endpoint: r.endpoint,
+          statusCode: r.statusCode,
+          payloadHash: r.payloadHash,
+          normalizedResult: jsonObject(r.normalizedResult),
+          fetchedAt: isoReq(r.fetchedAt),
+        }),
+      );
+    },
+
+    // --- 同期ロック（TTL 付き。原子的な取得を DB で保証） -------------------
+    async acquireLock(key, holder, ttlMs) {
+      const now = new Date();
+      const expiresAt = new Date(now.getTime() + ttlMs);
+      // 期限切れロックを掃除してから、条件付き upsert を試みる
+      await prisma.syncLock.deleteMany({ where: { key, expiresAt: { lt: now } } });
+      try {
+        // 空きなら作成（PK 競合＝他者が保持中）
+        await prisma.syncLock.create({ data: { key, holder, acquiredAt: now, expiresAt } });
+        return true;
+      } catch (err) {
+        if (isUniqueViolation(err)) {
+          // 自分自身のロックなら延長して true（再入可能）
+          const updated = await prisma.syncLock.updateMany({
+            where: { key, holder },
+            data: { expiresAt },
+          });
+          return updated.count > 0;
+        }
+        throw err;
+      }
+    },
+    async releaseLock(key, holder) {
+      await prisma.syncLock.deleteMany({ where: { key, holder } });
     },
 
     // --- 通知・サポート・障害 ---------------------------------------------

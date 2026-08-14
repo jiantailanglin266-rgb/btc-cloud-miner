@@ -25,6 +25,10 @@ import {
   allocateAllPending,
   AllocationError,
 } from "@/modules/revenue/allocation";
+import { testProviderConnection } from "@/modules/provider/test-connection";
+import { runWorkerSync, runPayoutSync } from "@/modules/mining/sync";
+import { encryptField } from "@/lib/crypto";
+import type { MiningProvider, ProviderKind } from "@/types";
 import { verifyTotp } from "@/modules/auth/totp";
 import { decryptField, newId } from "@/lib/crypto";
 import {
@@ -244,6 +248,90 @@ export const POST = handler(async (req: Request) => {
       return ok({ settings: updated });
     }
 
+    // --- プロバイダー追加（資格情報は AES-256-GCM で暗号化して保存） --------
+    case "create-provider": {
+      const kinds: ProviderKind[] = [
+        "MOCK", "POOL_REST", "STRATUM", "PROVIDER_A", "PROVIDER_B",
+        "BRAIINS", "F2POOL", "FARM_GENERIC", "CUSTOMER_OWNED",
+      ];
+      const kind = kinds.includes(body.kind as ProviderKind)
+        ? (body.kind as ProviderKind)
+        : null;
+      const name = typeof body.name === "string" ? body.name.trim() : "";
+      if (!kind || !name || name.length > 100) {
+        return validationError([{ path: "kind/name", message: "種別と表示名は必須です" }]);
+      }
+      const secret = typeof body.secret === "string" && body.secret ? body.secret : null;
+      const provider: MiningProvider = {
+        id: `provider-${newId().slice(0, 12)}`,
+        tenantId: ctx.tenant.id,
+        kind,
+        name,
+        region: typeof body.region === "string" ? body.region.slice(0, 40) : "",
+        endpoint: typeof body.endpoint === "string" && body.endpoint ? body.endpoint.slice(0, 300) : null,
+        credentialsRef: typeof body.credentialsRef === "string" && body.credentialsRef
+          ? body.credentialsRef.slice(0, 200) : null,
+        // ★ 平文の secret は保存しない。AES-256-GCM で暗号化して credentialsEnc へ
+        credentialsEnc: secret ? encryptField(secret) : null,
+        workerPrefix: typeof body.workerPrefix === "string" ? body.workerPrefix.slice(0, 40) : null,
+        status: "OFFLINE",
+        lastOkAt: null,
+        lastError: null,
+        consecutiveFailures: 0,
+        lastLatencyMs: null,
+        lastSyncAt: null,
+        priority: typeof body.priority === "number" ? body.priority : 10,
+        enabled: body.enabled !== false,
+        poolName: typeof body.poolName === "string" ? body.poolName.slice(0, 60) : "",
+        payoutScheme: "FPPS",
+      };
+      await store.upsertProvider(provider);
+      await audit({
+        tenantId: ctx.tenant.id,
+        actorUserId: ctx.user.id,
+        actorEmail: ctx.user.email,
+        actorRole: ctx.user.role,
+        action: "admin.provider.create",
+        targetType: "provider",
+        targetId: provider.id,
+        // ★ secret は audit の detail に入れない（マスクされるが念のため含めない）
+        detail: { kind, name, hasSecret: Boolean(secret) },
+        ip,
+      });
+      // 末尾4桁マスクだけ返す（平文は返さない）
+      return ok({
+        providerId: provider.id,
+        credentialMask: secret ? "••••••••" + secret.slice(-4) : null,
+      });
+    }
+
+    // --- TEST CONNECTION（実 API へ1回接続して結果を分類） -----------------
+    case "test-connection": {
+      const id = typeof body.providerId === "string" ? body.providerId : null;
+      if (!id) return validationError([{ path: "providerId", message: "必須です" }]);
+      const provider = await store.getProvider(ctx.tenant.id, id);
+      if (!provider) return notFound();
+      const result = await testProviderConnection(provider);
+      // 接続結果をプロバイダー状態にも反映
+      await store.updateProvider(ctx.tenant.id, id, {
+        status: result.code === "CONNECTED" ? "ONLINE" : "OFFLINE",
+        lastOkAt: result.code === "CONNECTED" ? new Date().toISOString() : undefined,
+        lastError: result.code === "CONNECTED" ? null : result.message,
+        lastLatencyMs: result.latencyMs ?? undefined,
+      });
+      return ok(result);
+    }
+
+    // --- 手動同期（ワーカー統計 / payout）ロック付き ------------------------
+    case "run-worker-sync": {
+      const r = await runWorkerSync(ctx.tenant.id);
+      return ok(r);
+    }
+    case "run-payout-sync": {
+      const r = await runPayoutSync(ctx.tenant.id);
+      return ok(r);
+    }
+
     // --- payout の同期（実プールから払い出し履歴を取り込む） ----------------
     case "sync-payouts": {
       const result = await syncPayouts(ctx.tenant.id);
@@ -276,6 +364,24 @@ export const POST = handler(async (req: Request) => {
         if (err instanceof AllocationError) return unprocessable(err.message);
         throw err;
       }
+    }
+
+    // --- Reconciliation（payout と Ledger の一致検証） ---------------------
+    case "reconcile": {
+      const { reconcile } = await import("@/modules/revenue/reconciliation");
+      const report = await reconcile(ctx.tenant.id);
+      await audit({
+        tenantId: ctx.tenant.id,
+        actorUserId: ctx.user.id,
+        actorEmail: ctx.user.email,
+        actorRole: ctx.user.role,
+        action: "revenue.reconcile",
+        targetType: "reconciliation",
+        targetId: "all",
+        detail: { mismatchCount: report.mismatchCount },
+        ip,
+      });
+      return ok(report);
     }
 
     // --- アラートの確認 ------------------------------------------------------

@@ -71,27 +71,69 @@ export async function getWorkersForUser(
   }));
 }
 
-/** 取得した読み取り値をスナップショットとして保存する（時系列の蓄積） */
+/**
+ * 取得した読み取り値を DB へ同期する。
+ *   fetchWorkers → normalize → upsert Worker → WorkerSnapshot 保存
+ * 実プロバイダーで初めて見るワーカーは自動で作成する（provider API がワーカー台帳の真実）。
+ * プロバイダーの lastSyncAt / lastLatencyMs も更新する。
+ */
 export async function persistSnapshots(tenantId: string): Promise<number> {
   const store = await getStore();
-  const workers = await store.listWorkers(tenantId);
+  const existing = await store.listWorkers(tenantId);
+  const byKey = new Map(
+    existing.map((w) => [`${w.providerId}:${w.externalWorkerId}`, w]),
+  );
   const outcomes = await fetchAllProviders(tenantId);
 
   // 5 分境界に丸める（重複取り込みを upsert で潰せるようにする）
   const bucketAt = new Date(Math.floor(Date.now() / 300_000) * 300_000).toISOString();
+  const nowIso = new Date().toISOString();
   const snapshots: WorkerSnapshot[] = [];
 
   for (const outcome of outcomes) {
+    const source = outcome.adapter.isLive
+      ? outcome.provider.name
+      : `mock:${outcome.provider.name}`;
+
+    // 未登録ワーカーを upsert（ワーカー台帳を provider に追随させる）
+    const toUpsert: Worker[] = [];
     for (const r of outcome.readings) {
-      const worker = workers.find(
-        (w) => w.providerId === outcome.provider.id && w.externalWorkerId === r.externalWorkerId,
-      );
-      if (!worker) continue;
+      const key = `${outcome.provider.id}:${r.externalWorkerId}`;
+      const found = byKey.get(key);
+      const worker: Worker = found
+        ? {
+            ...found,
+            model: r.model || found.model,
+            ratedHashrateThs: r.ratedHashrateThs || found.ratedHashrateThs,
+            ratedEfficiencyJPerTh:
+              r.ratedEfficiencyJPerTh || found.ratedEfficiencyJPerTh,
+            status: r.workerStatus,
+            lastSeenAt: nowIso,
+          }
+        : {
+            id: `wk-${outcome.provider.id}-${r.externalWorkerId}`.replace(
+              /[^a-zA-Z0-9_-]/g,
+              "_",
+            ),
+            tenantId,
+            providerId: outcome.provider.id,
+            externalWorkerId: r.externalWorkerId,
+            minerId: r.minerId,
+            model: r.model,
+            ratedHashrateThs: r.ratedHashrateThs,
+            ratedEfficiencyJPerTh: r.ratedEfficiencyJPerTh,
+            status: r.workerStatus,
+            lastSeenAt: nowIso,
+          };
+      toUpsert.push(worker);
+      byKey.set(key, worker);
+
       snapshots.push({
         workerId: worker.id,
         tenantId,
         bucketAt,
         hashrateThs: r.hashrateThs,
+        hashrate1hThs: r.hashrate1hThs,
         acceptedShares: r.acceptedShares,
         rejectedShares: r.rejectedShares,
         temperatureC: r.temperatureC,
@@ -99,9 +141,19 @@ export async function persistSnapshots(tenantId: string): Promise<number> {
         uptimeSec: r.uptimeSec,
         poolStatus: r.poolStatus,
         workerStatus: r.workerStatus,
+        lastShareAt: r.lastShareAt,
+        source,
         estimatedEarningsBtc: r.estimatedEarningsBtc,
       });
     }
+
+    if (toUpsert.length > 0) await store.upsertWorkers(tenantId, toUpsert);
+
+    // プロバイダーの同期メタを更新（Dashboard の Last Sync / Latency 表示に使う）
+    await store.updateProvider(tenantId, outcome.provider.id, {
+      lastLatencyMs: outcome.latencyMs,
+      lastSyncAt: nowIso,
+    });
   }
 
   if (snapshots.length > 0) await store.saveSnapshots(tenantId, snapshots);

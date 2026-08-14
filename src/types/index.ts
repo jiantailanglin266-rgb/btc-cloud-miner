@@ -281,16 +281,80 @@ export type MiningProvider = {
   name: string;
   region: string;
   endpoint: string | null;
-  /** Secrets Manager のキー名のみ。認証情報の値は絶対に保持しない */
+  /**
+   * 外部シークレット参照方式（Secrets Manager のキー名）。値は保持しない。
+   * 本番はこちらを推奨。
+   */
   credentialsRef: string | null;
+  /**
+   * アプリ層で暗号化して保持する資格情報（AES-256-GCM, `enc:v1:...`）。
+   * 管理画面から登録した API トークン等をここに入れる。ログ・API 応答に平文を出さない。
+   * credentialsRef が設定されていればそちらを優先する。
+   */
+  credentialsEnc: string | null;
+  /** ワーカー名からユーザー契約へ紐付けるためのプレフィックス（例 "acme."） */
+  workerPrefix: string | null;
   status: ProviderStatus;
   lastOkAt: ISODateString | null;
   lastError: string | null;
   consecutiveFailures: number;
+  /** 直近の同期でのプール API 応答時間（ミリ秒）。未取得は null */
+  lastLatencyMs: number | null;
+  /** 直近でワーカー統計を同期した時刻。未同期は null */
+  lastSyncAt: ISODateString | null;
   priority: number;
   enabled: boolean;
   poolName: string;
   payoutScheme: PayoutScheme;
+};
+
+/** TEST CONNECTION の結果分類 */
+export type TestConnectionCode =
+  | "CONNECTED"
+  | "AUTHENTICATION_FAILED"
+  | "RATE_LIMITED"
+  | "TIMEOUT"
+  | "INVALID_RESPONSE"
+  | "PROVIDER_OFFLINE";
+
+export type TestConnectionResult = {
+  code: TestConnectionCode;
+  latencyMs: number | null;
+  /** 成功時のみ */
+  info: {
+    provider: string;
+    account: string | null;
+    workerCount: number | null;
+    currentHashrateThs: number | null;
+    unpaidBtc: BtcAmount | null;
+    paidBtc: BtcAmount | null;
+  } | null;
+  message: string;
+};
+
+/**
+ * プロバイダー API の生レスポンスの記録（デバッグ用）。
+ * ★ API Key / Authorization / Cookie / Secret は絶対に保存しない（sanitize 済みのみ）。
+ */
+export type RawProviderSnapshot = {
+  id: string;
+  tenantId: string;
+  providerId: string;
+  endpoint: string;
+  statusCode: number;
+  /** 生ペイロードの SHA-256（変化検知用。本文は保存しない） */
+  payloadHash: string;
+  /** 正規化後の要約（機微情報を含まない） */
+  normalizedResult: Record<string, unknown>;
+  fetchedAt: ISODateString;
+};
+
+/** 分散/DB ロック（二重同期・二重 payout の防止） */
+export type SyncLock = {
+  key: string;
+  holder: string;
+  acquiredAt: ISODateString;
+  expiresAt: ISODateString;
 };
 
 export type WorkerStatus = "ACTIVE" | "OFFLINE" | "MAINTENANCE" | "UNKNOWN";
@@ -314,6 +378,8 @@ export type WorkerSnapshot = {
   tenantId: string;
   bucketAt: ISODateString;
   hashrateThs: number;
+  /** 直近1時間平均。取得できないプールは null */
+  hashrate1hThs: number | null;
   acceptedShares: number;
   rejectedShares: number;
   temperatureC: number | null;
@@ -321,6 +387,10 @@ export type WorkerSnapshot = {
   uptimeSec: number;
   poolStatus: string;
   workerStatus: WorkerStatus;
+  /** 最終 share 受信時刻 */
+  lastShareAt: ISODateString | null;
+  /** データ出所（プール名 / mock:...） */
+  source: string;
   /** プロバイダーの申告値。参考値であり、本システムの推定とは別 */
   estimatedEarningsBtc: BtcAmount | null;
 };
@@ -330,7 +400,11 @@ export type ProviderWorkerReading = {
   externalWorkerId: string;
   minerId: string;
   model: string;
+  /** リアルタイム（直近）ハッシュレート */
   hashrateThs: number;
+  /** 直近1時間平均。取得できないプールは null */
+  hashrate1hThs: number | null;
+  /** 直近24時間平均（rated と兼ねる場合あり） */
   ratedHashrateThs: number;
   ratedEfficiencyJPerTh: number;
   acceptedShares: number;
@@ -340,6 +414,8 @@ export type ProviderWorkerReading = {
   uptimeSec: number;
   poolStatus: string;
   workerStatus: WorkerStatus;
+  /** 最終 share 受信時刻。取得できないプールは null */
+  lastShareAt: ISODateString | null;
   estimatedEarningsBtc: BtcAmount | null;
 };
 

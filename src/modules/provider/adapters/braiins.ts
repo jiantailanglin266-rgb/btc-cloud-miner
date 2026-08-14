@@ -25,6 +25,7 @@ import type {
 } from "../interface";
 import { normalizeWorkerStatus, safeNumber, safeNullableNumber } from "../interface";
 import { toEnvName } from "./pool-rest";
+import { resolveProviderSecret } from "./secret";
 import { formatNumberAsBtc } from "@/lib/decimal";
 import { config } from "@/lib/config";
 
@@ -65,9 +66,7 @@ export class BraiinsPoolAdapter implements MiningProviderAdapter {
     this.id = provider.id;
     this.name = provider.name;
     this.base = (provider.endpoint || "https://pool.braiins.com").replace(/\/$/, "");
-    this.token = provider.credentialsRef
-      ? (process.env[toEnvName(provider.credentialsRef)] ?? null)
-      : null;
+    this.token = resolveProviderSecret(provider);
   }
 
   private async get(path: string): Promise<unknown> {
@@ -91,11 +90,13 @@ export class BraiinsPoolAdapter implements MiningProviderAdapter {
     const readings: ProviderWorkerReading[] = Object.entries(workers).map(([name, w]) => {
       const unit = String(w.hash_rate_unit ?? "TH/s");
       const k = unitToThs(unit);
+      const h1 = safeNumber(w.hash_rate_60m ?? w.hash_rate_1h, { max: 1e12 }) * k;
       return {
         externalWorkerId: name,
         minerId: "",
         model: "",
         hashrateThs: safeNumber(w.hash_rate_5m, { max: 1e12 }) * k,
+        hashrate1hThs: h1 > 0 ? h1 : null,
         ratedHashrateThs: safeNumber(w.hash_rate_24h, { max: 1e12 }) * k,
         ratedEfficiencyJPerTh: 0, // Braiins は効率を返さない。0=不明（でっち上げない）
         acceptedShares: safeNumber(w.shares_5m ?? w.shares, { max: 1e15 }),
@@ -105,6 +106,10 @@ export class BraiinsPoolAdapter implements MiningProviderAdapter {
         uptimeSec: 0,
         poolStatus: String(w.state ?? "unknown"),
         workerStatus: normalizeWorkerStatus(String(w.state ?? "")),
+        lastShareAt:
+          typeof w.last_share === "number"
+            ? new Date(w.last_share * 1000).toISOString()
+            : null,
         estimatedEarningsBtc: null,
       };
     });

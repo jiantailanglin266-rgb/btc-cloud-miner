@@ -92,6 +92,10 @@ export class PoolRestAdapter implements MiningProviderAdapter {
         minerId: String(pick(w, ["miner_id", "minerId", "device_id"]) ?? ""),
         model: String(pick(w, ["model", "device_model", "hardware"]) ?? "unknown"),
         hashrateThs,
+        hashrate1hThs: (() => {
+          const v = safeNullableNumber(pick(w, ["hashrate_1h", "hashrate1h"]), { min: 0, max: 1e12 });
+          return v === null ? null : toThs(v, unit);
+        })(),
         ratedHashrateThs: toThs(
           safeNumber(pick(w, ["rated_hashrate", "nominal_hashrate"]), { max: 1e12 }),
           unit,
@@ -118,6 +122,13 @@ export class PoolRestAdapter implements MiningProviderAdapter {
         workerStatus: normalizeWorkerStatus(
           String(pick(w, ["status", "state", "worker_status"]) ?? ""),
         ),
+        lastShareAt: (() => {
+          const v = pick(w, ["last_share_at", "last_share", "lastShareAt"]);
+          if (typeof v === "number") return new Date(v * 1000).toISOString();
+          if (typeof v === "string" && Number.isFinite(Date.parse(v)))
+            return new Date(v).toISOString();
+          return null;
+        })(),
         estimatedEarningsBtc: null,
       };
     });
