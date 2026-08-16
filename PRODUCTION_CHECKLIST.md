@@ -99,6 +99,7 @@
 - [x] **PASS** break-even 超の Bid・全資金投入・無制限注文が構造的に不可能（テスト固定）
 - [x] **PASS** 判定の説明可能性（DecisionSnapshot に入力・計算・理由を全保存）
 - [x] **PASS** Paper Trading・Backtest・Emergency Stop・リスク上限 6 種
+- [x] **VERIFIED 2026-08-17** paper モードで実 NiceHash 公開 API + 実難易度のスキャン成功（dataMode=LIVE_API・実 marketFactor=1e18 に自動適応・実勢マージン −24.9% を正しく WAIT。ARBITRAGE.md §8）
 - [ ] **MANUAL** paper モードで 30 日以上運用し forecast error EMA の安定を確認
 - [ ] **MANUAL** 実サンプル（LIVE_API）での Backtest で Threshold/Dynamic の優位を確認
 - [ ] **MANUAL** NiceHash アカウント作成 + **注文権限のみ**の API キー発行（Withdrawal 権限は付与しない）

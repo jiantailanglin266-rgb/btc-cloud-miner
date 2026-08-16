@@ -99,3 +99,25 @@ live 移行チェックリスト:
 3. NiceHash アカウントに**注文権限のみ**の API キーを発行
 4. リスク上限を最小額に設定 → `NICEHASH_MODE=live` + `FEATURE_NICEHASH_TRADING_ENABLED=true`
 5. 最小注文で 1 サイクル（発注→停止→PnL照合）を確認
+
+## 8. LIVE_API 検証記録
+
+### 2026-08-17 paper モード実 API 疎通（認証不要の公開エンドポイントのみ）
+
+`NICEHASH_MODE=paper` + `BITCOIN_SOURCE_PRIMARY=https://mempool.space/api` で
+実 NiceHash orderbook・実難易度によるスキャンを実行し、以下を確認した。
+
+| 項目 | 実測値 | 判定 |
+|---|---|---|
+| dataMode | `LIVE_API`（NH orderbook・mempool.space とも実データ） | ✓ |
+| marketFactor | **1e18（EH）** — 実 API から取得。Mock の 1e15（PH）と異なるがエンジンは settings 由来の値でスケール適応 | ✓ |
+| 実難易度 / subsidy | 127.48T / 3.125 BTC | ✓ |
+| NH 実勢価格 | 0.5199 BTC/EH/day | — |
+| break-even | 0.3902 BTC/EH/day → 期待マージン **−24.9%** | — |
+| 判定 | `WAIT`「期待マージン −24.9% < 開始閾値 8.0%」・注文ゼロ | ✓ 赤字市場で買わない |
+| maxBid 以下の板深さ | 0 TH/s（fillableThsAtMaxBid=0） | ✓ |
+| 信頼度 | Kill Switch OFF 時 **0**（緊急経路）／ ON 時 **0.9** =(1−EMA0.1)×LIVE_API係数1.0 | ✓ |
+
+**含意**: 実勢の hashpower 市場は break-even 近傍〜上で推移するのが常態であり、
+エンジンが「利益を空想しない」ことの実証になっている。BUY が出るのは価格急落・
+難易度調整直後などのスプレッド発生時のみ（それが本システムの狙い）。
