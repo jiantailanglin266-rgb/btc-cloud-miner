@@ -134,6 +134,20 @@ export function ArbitragePanel({
               value={`${(scan.inputs.expectedPoolEfficiency * 100).toFixed(1)}% / ${(scan.inputs.expectedRejectRate * 100).toFixed(2)}%（${scan.inputs.poolPerformanceSource === "MEASURED" ? "実測" : "既定値"}）`} />
             <KeyValue label="ボラティリティ（出所）"
               value={`${(scan.inputs.volatility * 100).toFixed(1)}%（${scan.inputs.volatilitySource === "MEASURED" ? "実測CoV" : "既定値"}）`} />
+            <KeyValue label="ブロック手数料（出所）"
+              value={`${scan.inputs.avgTxFeesBtcPerBlock.toFixed(4)} BTC/block（${scan.inputs.avgTxFeesSource === "MEASURED_BLOCKS" ? "直近ブロック実測" : "推奨fee近似"}）`} />
+            <KeyValue label="実効難易度（リターゲット考慮）"
+              value={
+                scan.inputs.retargetWeight > 0
+                  ? `${scan.inputs.effectiveDifficulty.toExponential(3)}（調整 ${(scan.inputs.difficultyAdjustmentRate * 100).toFixed(1)}% を期間の ${(scan.inputs.retargetWeight * 100).toFixed(0)}% に加重）`
+                  : "調整は注文期間外（現在難易度を使用）"
+              } />
+            <KeyValue label="板の総供給量（単位監査）"
+              value={
+                scan.outputs?.orderbookTotalThs != null
+                  ? `${scan.outputs.orderbookTotalThs.toExponential(2)} TH/s（網 ${scan.inputs.networkHashrateThs.toExponential(2)} 以下で正常）`
+                  : "—"
+              } />
             <KeyValue label="Break-even 価格（BTC/PH/day）"
               value={p.breakEvenPriceBtcPerFactorDay.toFixed(6)} />
             <KeyValue label="発注上限価格（Max Bid）"

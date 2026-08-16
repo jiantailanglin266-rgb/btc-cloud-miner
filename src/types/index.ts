@@ -514,6 +514,11 @@ export type BitcoinNetworkInfo = {
   estimatedAdjustmentRate: number;
   mempoolTxCount: number;
   recommendedFeeSatPerVb: number;
+  /**
+   * 直近ブロックの実測平均手数料（BTC/block・トリム平均）。
+   * ソースが実測値を提供しない場合は null（推測で埋めない）
+   */
+  avgBlockFeesBtc: number | null;
   freshness: Freshness;
 };
 
@@ -910,6 +915,11 @@ export type HashpowerOrder = {
   status: HashpowerOrderStatus;
   /** 発注価格（BTC/factor/day） */
   priceBtcPerFactorDay: number;
+  /**
+   * 発注時点の marketFactor（価格の分母単位。実 SHA256ASICBOOST は 1e18=EH）。
+   * ★ コスト換算に必須。1e15 を仮定すると実市場では 1000 倍ずれる（精密化v3 #4）
+   */
+  marketFactor: number;
   /** 要求ハッシュレート */
   requestedThs: number;
   /** 実際に届いたハッシュレート（stats から更新） */
@@ -967,6 +977,17 @@ export type DecisionSnapshot = {
     volatilitySource: "MEASURED" | "DEFAULT";
     /** pool 効率・reject 率の出所（実測 or 既定値） */
     poolPerformanceSource: "MEASURED" | "DEFAULT";
+    /** ブロック手数料の出所（精密化v3 #1: 実測ブロック or 推奨fee×1MvB近似） */
+    avgTxFeesSource: "MEASURED_BLOCKS" | "FEE_PROXY";
+    /**
+     * 難易度リターゲット考慮後の実効難易度（精密化v3 #2）。
+     * 注文期間中にリターゲットが無ければ difficulty と同値
+     */
+    effectiveDifficulty: number;
+    /** 次回難易度調整の推定変化率（0.021 = +2.1%。ソース未提供なら 0） */
+    difficultyAdjustmentRate: number;
+    /** 注文期間のうちリターゲット後に属する時間比率（0〜1） */
+    retargetWeight: number;
   };
   /** 計算結果 */
   outputs: {
@@ -984,6 +1005,11 @@ export type DecisionSnapshot = {
     slippageRate: number | null;
     /** maxBid 以下で調達可能な量（TH/s） */
     fillableThsAtMaxBid: number;
+    /**
+     * 板の総供給量（TH/s 換算）。ネットワークハッシュレート超なら
+     * 単位異常として発注を止める（精密化v3 #3: 単位整合性の監査）
+     */
+    orderbookTotalThs: number | null;
   };
   action: ArbitrageAction;
   reasons: string[];

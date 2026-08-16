@@ -26,7 +26,7 @@ import { addBtc, fromSat, toSat } from "@/lib/decimal";
 import { getNetworkAndPrice } from "@/modules/bitcoin/service";
 import { getProviderHealth } from "@/modules/provider/registry";
 import { NiceHashAdapter, SHA256_ALGORITHM } from "@/modules/hashpower/nicehash";
-import { priceFactorDayToBtcPerThDay } from "@/modules/hashpower/units";
+import { priceFactorDayToBtcPerThDay, speedFactorToThs } from "@/modules/hashpower/units";
 import { effectivePriceForHashrate, depthBelowPrice } from "@/modules/hashpower/orderbook";
 import {
   calculateProfitability,
@@ -56,6 +56,41 @@ export type ScanResult = {
 function estimateAvgTxFeesBtcPerBlock(recommendedFeeSatPerVb: number): number {
   const sats = Math.max(0, recommendedFeeSatPerVb) * 1_000_000;
   return Math.min(5, sats / 1e8); // 上限5BTC（異常値ガード）
+}
+
+/**
+ * 難易度リターゲットを考慮した実効難易度（精密化v3 #2）。
+ *
+ * 収益 ∝ 1/難易度 なので、注文期間が現在難易度 d0 の区間と調整後 d1 の区間に
+ * またがる場合の期待収益は時間加重の調和平均難易度で表せる:
+ *   d_eff = 1 / (w0/d0 + w1/d1)
+ * リターゲットが期間外・変化率不明(0)なら d0 をそのまま返す。
+ */
+export function effectiveDifficultyOverRuntime(input: {
+  difficulty: number;
+  blocksUntilAdjustment: number;
+  estimatedAdjustmentRate: number;
+  runtimeSec: number;
+}): { effectiveDifficulty: number; retargetWeight: number } {
+  const { difficulty, blocksUntilAdjustment, estimatedAdjustmentRate, runtimeSec } = input;
+  // 残ブロック × 平均 600 秒でリターゲット到達時刻を近似
+  const retargetInSec = blocksUntilAdjustment * 600;
+  if (
+    estimatedAdjustmentRate === 0 ||
+    runtimeSec <= 0 ||
+    retargetInSec >= runtimeSec ||
+    difficulty <= 0
+  ) {
+    return { effectiveDifficulty: difficulty, retargetWeight: 0 };
+  }
+  const projected = difficulty * (1 + estimatedAdjustmentRate);
+  if (projected <= 0) return { effectiveDifficulty: difficulty, retargetWeight: 0 };
+  const w1 = Math.min(1, Math.max(0, (runtimeSec - retargetInSec) / runtimeSec));
+  const w0 = 1 - w1;
+  return {
+    effectiveDifficulty: 1 / (w0 / difficulty + w1 / projected),
+    retargetWeight: w1,
+  };
 }
 
 export async function runOpportunityScan(tenantId: string): Promise<ScanResult> {
@@ -108,13 +143,27 @@ export async function runOpportunityScan(tenantId: string): Promise<ScanResult> 
     measureVolatility(),
   ]);
 
+  // --- 精密化v3 #1: ブロック手数料は実測（直近ブロックのトリム平均）を優先 -----
+  const avgTxFeesSource: "MEASURED_BLOCKS" | "FEE_PROXY" =
+    network.avgBlockFeesBtc !== null ? "MEASURED_BLOCKS" : "FEE_PROXY";
+  const avgTxFeesBtcPerBlock =
+    network.avgBlockFeesBtc ?? estimateAvgTxFeesBtcPerBlock(network.recommendedFeeSatPerVb);
+
+  // --- 精密化v3 #2: 注文期間内の難易度リターゲットを時間加重で織り込む --------
+  const diffAdj = effectiveDifficultyOverRuntime({
+    difficulty: network.difficulty,
+    blocksUntilAdjustment: network.blocksUntilAdjustment,
+    estimatedAdjustmentRate: network.estimatedAdjustmentRate,
+    runtimeSec: state.maxRuntimeSec,
+  });
+
   const baseInput: Omit<ProfitabilityInput, "nicehashPriceBtcPerFactorDay"> = {
     btcPriceUsd: price.usd,
     usdJpy,
-    difficulty: network.difficulty,
+    difficulty: diffAdj.effectiveDifficulty,
     networkHashrateThs: network.networkHashrateThs,
     blockSubsidyBtc: network.blockRewardBtc,
-    avgTxFeesBtcPerBlock: estimateAvgTxFeesBtcPerBlock(network.recommendedFeeSatPerVb),
+    avgTxFeesBtcPerBlock,
     poolFeeRate: config.fees.poolFeeRate,
     expectedPoolEfficiency: poolPerf.efficiency,
     expectedRejectRate: poolPerf.rejectRate,
@@ -158,6 +207,26 @@ export async function runOpportunityScan(tenantId: string): Promise<ScanResult> 
   const fillableThsAtMaxBid = orderbook
     ? depthBelowPrice(orderbook, profitability.maxBidPriceBtcPerFactorDay)
     : 0;
+
+  // --- 精密化v3 #3: 板の単位整合性監査 --------------------------------------
+  // 板の総供給量（TH/s 換算）がネットワーク全体のハッシュレートを超えることは
+  // 物理的にあり得ない。超えていれば marketFactor と速度の単位不整合を疑い、
+  // その板を使った発注を止める（実測: SHA256ASICBOOST は 23EH vs 網914EH で正常）。
+  const orderbookTotalThs = orderbook
+    ? speedFactorToThs(orderbook.totalAvailableSpeedFactor, marketFactor)
+    : null;
+  const orderbookUnitsSane =
+    orderbookTotalThs === null || orderbookTotalThs <= network.networkHashrateThs;
+  if (!orderbookUnitsSane) {
+    await raiseAlert(tenantId, {
+      kind: "HASHRATE_DATA_ANOMALY",
+      severity: "CRITICAL",
+      message: `orderbook の総供給量がネットワークハッシュレートを超えています（単位不整合の疑い）: ${orderbookTotalThs?.toExponential(3)} TH/s > ${network.networkHashrateThs.toExponential(3)} TH/s`,
+      evidence: { orderbookTotalThs, marketFactor, networkHashrateThs: network.networkHashrateThs },
+      targetType: "hashpower",
+      targetId: SHA256_ALGORITHM,
+    }).catch(() => undefined);
+  }
 
   // --- 3. リスク状態 → Decision --------------------------------------------
   const poolOnline = providerHealth.some(
@@ -207,8 +276,15 @@ export async function runOpportunityScan(tenantId: string): Promise<ScanResult> 
     forecastErrorEma: state.forecastErrorEma,
     dataMode,
     // 深さ判定: 暫定量の9割以上を maxBid 以下で調達できること
-    depthSufficient: roughThs <= 0 || fillableThsAtMaxBid >= roughThs * 0.9,
+    // ＋単位監査（精密化v3 #3）: 単位不整合の疑いがある板では発注しない
+    depthSufficient:
+      orderbookUnitsSane && (roughThs <= 0 || fillableThsAtMaxBid >= roughThs * 0.9),
   });
+  if (!orderbookUnitsSane) {
+    decision.reasons.push(
+      "orderbook の単位整合性検査に失敗（総供給量がネットワークハッシュレート超）。単位不整合の疑いがあるため発注しない",
+    );
+  }
   if (riskViolations.length > 0) decision.reasons.push(...riskViolations);
 
   // --- 4. Position sizing ----------------------------------------------------
@@ -251,6 +327,10 @@ export async function runOpportunityScan(tenantId: string): Promise<ScanResult> 
       networkHashrateThs: network.networkHashrateThs,
       blockSubsidyBtc: network.blockRewardBtc,
       avgTxFeesBtcPerBlock: baseInput.avgTxFeesBtcPerBlock,
+      avgTxFeesSource,
+      effectiveDifficulty: diffAdj.effectiveDifficulty,
+      difficultyAdjustmentRate: network.estimatedAdjustmentRate,
+      retargetWeight: diffAdj.retargetWeight,
       poolFeeRate: baseInput.poolFeeRate,
       expectedPoolEfficiency: baseInput.expectedPoolEfficiency,
       expectedRejectRate: baseInput.expectedRejectRate,
@@ -276,6 +356,7 @@ export async function runOpportunityScan(tenantId: string): Promise<ScanResult> 
       effectivePriceBtcPerFactorDay: walk?.vwapPriceBtcPerFactorDay ?? null,
       slippageRate: walk?.slippageRate ?? null,
       fillableThsAtMaxBid,
+      orderbookTotalThs,
     },
     action: decision.action,
     reasons: decision.reasons,
@@ -353,7 +434,13 @@ async function manageOrders(
   // 稼働中注文の paper 精算（経過時間ぶんのコスト・期待採掘を積む）
   for (const order of active) {
     if (order.mode !== "live") {
-      await accruePaperOrder(tenantId, order, profitability, state.safetyMarginRate);
+      await accruePaperOrder(
+        tenantId,
+        order,
+        profitability,
+        state.safetyMarginRate,
+        ctx.orderbookPrice,
+      );
     }
   }
 
@@ -389,6 +476,7 @@ async function manageOrders(
     poolId: null,
     status: "ACTIVE",
     priceBtcPerFactorDay: bidPrice,
+    marketFactor: ctx.marketFactor, // 価格の単位（コスト換算に必須。精密化v3 #4）
     requestedThs: ctx.recommendedThs,
     deliveredThs: ctx.recommendedThs, // paper は要求どおり配信された仮定（保守側: コスト満額）
     amountBtc: ctx.maxSpendBtc,
@@ -450,20 +538,36 @@ async function manageOrders(
  * ★「採掘量」は安全マージン控除前の物理期待値で記録する。
  *   安全マージンは判断バッファであり物理現象ではないため、
  *   これを含めたままだと expected vs actual の誤差測定が歪む。
+ * ★ 精密化v3 #5: NiceHash は指値が実勢を下回ると hashrate が配信されない
+ *   （undercut = 飢餓状態）。その間はコストも採掘もゼロにして正直に再現する。
  */
 async function accruePaperOrder(
   tenantId: string,
   order: HashpowerOrder,
   profitability: ProfitabilityResult,
   safetyMarginRate: number,
+  currentMarketPrice: number | null,
 ): Promise<void> {
   const store = await getStore();
   const lastMs = new Date(order.updatedAt).getTime();
   const dtDays = Math.max(0, (Date.now() - lastMs) / 86_400_000);
   if (dtDays <= 0) return;
 
+  // 飢餓判定: 実勢（アクティブ最安値）より低い指値では配信されない。
+  // updatedAt だけ進め、価格回復時に飢餓期間ぶんを遡って精算しないようにする
+  if (currentMarketPrice !== null && order.priceBtcPerFactorDay < currentMarketPrice) {
+    await store.upsertHashpowerOrder({
+      ...order,
+      reason: order.reason.includes("[starved]") ? order.reason : `${order.reason} [starved]`,
+      updatedAt: new Date().toISOString(),
+    });
+    return;
+  }
+
   const ths = order.deliveredThs ?? order.requestedThs;
-  const costDensity = priceFactorDayToBtcPerThDay(order.priceBtcPerFactorDay, 1e15);
+  // ★ marketFactor は注文に保存した値を使う（実 SHA256ASICBOOST は 1e18=EH。
+  //   1e15 を仮定すると実市場でコストが 1000 倍ずれる）
+  const costDensity = priceFactorDayToBtcPerThDay(order.priceBtcPerFactorDay, order.marketFactor);
   const cost = costDensity * ths * dtDays * (1 + config.nicehash.marketFeeRate);
   // 安全マージン控除を戻した物理期待値
   const physicalDensity =
@@ -493,11 +597,14 @@ async function accruePaperOrder(
  */
 async function closeOrder(
   tenantId: string,
-  order: HashpowerOrder,
+  staleOrder: HashpowerOrder,
   reason: string,
   state: ArbitrageState,
 ): Promise<void> {
   const store = await getStore();
+  // ★ 同一スキャン内で直前に accruePaperOrder が upsert している可能性があるため
+  //   必ず最新を読み直す（古いオブジェクトで上書きすると最終精算分の PnL が消える）
+  const order = (await store.getHashpowerOrder(tenantId, staleOrder.id)) ?? staleOrder;
 
   if (order.mode === "live" && order.externalOrderId) {
     // Emergency Cancellation（フェーズ39）: リトライは scheduler の Dead Letter に委ねる

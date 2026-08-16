@@ -1,4 +1,4 @@
--- CreateSchema
+﻿-- CreateSchema
 CREATE SCHEMA IF NOT EXISTS "public";
 
 -- CreateTable
@@ -490,6 +490,7 @@ CREATE TABLE "hashpower_orders" (
     "poolId" TEXT,
     "status" TEXT NOT NULL,
     "priceBtcPerFactorDay" DECIMAL(18,8) NOT NULL,
+    "marketFactor" DOUBLE PRECISION NOT NULL DEFAULT 1000000000000000,
     "requestedThs" DECIMAL(14,4) NOT NULL,
     "deliveredThs" DECIMAL(14,4),
     "amountBtc" DECIMAL(18,8) NOT NULL,

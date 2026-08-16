@@ -70,6 +70,17 @@ Secret はログ・例外・ヘッダダンプに出さない（テストで検�
 | 6 | **厳密ドローダウン** | 累積実現PnL（cumulativePnlBtc）を状態に保持し、peak=max(HWM,累積) からの下落率で算出 |
 | 7 | **Order-level 分散** | 注文に expectedBtc を保存し、Expected/Actual/Variance を注文テーブルに表示（どの注文の予測が外れたか追跡可能） |
 
+## 4.6 精密化（v3）— 実 API 検証（§8）で判明した粗さの解消
+
+| # | 項目 | 内容 |
+|---|---|---|
+| 1 | **実測ブロック手数料** | 従来の「推奨fee×1MvB」近似をやめ、直近ブロックの実測 totalFees（mempool.space `/v1/blocks`・上下1件トリム平均）を優先。取得不可なら proxy へフォールバックし、出所（MEASURED_BLOCKS/FEE_PROXY）を snapshot に記録 |
+| 2 | **難易度リターゲット予測** | 注文期間中に難易度調整が入る場合、収益∝1/難易度 に基づく時間加重の**調和平均** d_eff = 1/(w0/d0 + w1/d1) で実効難易度を計算（mempool.space の調整予測を使用。予測不能なら現在値のまま＝推測で埋めない） |
+| 3 | **板の単位整合性監査** | 板の総供給量（TH/s 換算）がネットワークハッシュレートを超えたら marketFactor と速度の単位不整合として CRITICAL アラート + 発注禁止。実測: SHA256ASICBOOST は 23EH vs 網914EH で正常 |
+| 4 | **注文の marketFactor 保存** | HashpowerOrder に発注時の marketFactor を保存し paper 精算に使用。実市場は **1e18(EH)** であり、1e15(PH) を仮定するとコストが 1000 倍ずれるバグを実 API 検証で発見・修正 |
+| 5 | **Paper 約定の現実化（飢餓）** | 指値が実勢（アクティブ最安値）未満の間は hashrate が配信されない実仕様を再現: コストも採掘もゼロ（undercut された注文が「タダで儲かる」幻想を排除） |
+| 6 | **クローズ時の精算保全** | 同一スキャン内で精算→STOP した際、古いオブジェクトで上書きして最終インターバルの PnL が消えるバグを修正（closeOrder は必ず store から最新を再読） |
+
 ## 5. 会計の絶対原則
 
 - **Expected（期待値）を Ledger に入れない**。Ledger に入るのは実 Pool payout と実 NiceHash コストから計算した Actual Net Profit のみ

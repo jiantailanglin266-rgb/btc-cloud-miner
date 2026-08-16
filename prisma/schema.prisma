@@ -673,6 +673,8 @@ model HashpowerOrder {
   /// PLANNED | SUBMITTED | ACTIVE | PARTIALLY_FILLED | STOPPING | CANCELLED | COMPLETED | FAILED
   status               String
   priceBtcPerFactorDay Decimal   @db.Decimal(18, 8)
+  /// 発注時点の marketFactor（実 SHA256ASICBOOST は 1e18=EH。コスト換算の分母単位）
+  marketFactor         Float     @default(1000000000000000)
   requestedThs         Decimal   @db.Decimal(14, 4)
   deliveredThs         Decimal?  @db.Decimal(14, 4)
   amountBtc            Decimal   @db.Decimal(18, 8)

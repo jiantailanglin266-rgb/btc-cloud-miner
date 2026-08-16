@@ -149,7 +149,8 @@ describe("予測誤差の学習と累積PnL（精密化 #5・#6）", () => {
     await memoryStore.upsertHashpowerOrder({
       id: "hpo-learn-1", tenantId: DEFAULT_TENANT_ID, mode: "paper",
       externalOrderId: null, algorithm: "SHA256ASICBOOST", market: "EU", poolId: null,
-      status: "ACTIVE", priceBtcPerFactorDay: 0.0004, requestedThs: 100, deliveredThs: 100,
+      status: "ACTIVE", priceBtcPerFactorDay: 0.0004, marketFactor: 1e15,
+      requestedThs: 100, deliveredThs: 100,
       amountBtc: "0.00500000", spentBtc: "0.00010000", minedBtc: "0.00013000",
       expectedBtc: "0.00010000",
       startedAt: new Date(Date.now() - 600_000).toISOString(), stoppedAt: null,

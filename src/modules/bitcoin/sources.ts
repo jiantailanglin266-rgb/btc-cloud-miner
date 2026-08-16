@@ -20,6 +20,8 @@ export type NetworkRaw = {
   estimatedAdjustmentRate: number;
   mempoolTxCount: number;
   recommendedFeeSatPerVb: number;
+  /** 直近ブロックの実測平均手数料（BTC/block）。提供の無いソースは null */
+  avgBlockFeesBtc: number | null;
 };
 
 export type PriceRaw = {
@@ -90,6 +92,20 @@ export function blocksUntilAdjustment(height: number): number {
   return 2016 - (height % 2016);
 }
 
+/**
+ * 直近ブロックの実測手数料（sats の配列）→ BTC/block のトリム平均。
+ * 上下 1 件ずつ捨てて外れ値（NFT ミント等の異常ブロック）の影響を抑える。
+ * 3 件未満なら実測とは言えないため null。
+ */
+export function trimmedMeanBlockFeesBtc(totalFeesSats: number[]): number | null {
+  const valid = totalFeesSats.filter((v) => Number.isFinite(v) && v >= 0 && v <= 50e8);
+  if (valid.length < 3) return null;
+  const sorted = [...valid].sort((a, b) => a - b);
+  const trimmed = sorted.slice(1, -1);
+  const mean = trimmed.reduce((s, v) => s + v, 0) / trimmed.length;
+  return mean / 1e8;
+}
+
 // ---------------------------------------------------------------------------
 // mempool.space 系 API
 // ---------------------------------------------------------------------------
@@ -100,13 +116,17 @@ export function mempoolSource(baseUrl: string): NetworkSource {
     name: `mempool:${new URL(base).host}`,
     isLive: true,
     async fetch(): Promise<NetworkRaw> {
-      const [difficultyAdj, tipHeight, hashrate, mempool, fees] = await Promise.all([
-        getJson(`${base}/v1/difficulty-adjustment`),
-        getText(`${base}/blocks/tip/height`),
-        getJson(`${base}/v1/mining/hashrate/3d`),
-        getJson(`${base}/mempool`),
-        getJson(`${base}/v1/fees/recommended`),
-      ]);
+      const [difficultyAdj, tipHeight, hashrate, mempool, fees, recentBlocks] =
+        await Promise.all([
+          getJson(`${base}/v1/difficulty-adjustment`),
+          getText(`${base}/blocks/tip/height`),
+          getJson(`${base}/v1/mining/hashrate/3d`),
+          getJson(`${base}/mempool`),
+          getJson(`${base}/v1/fees/recommended`),
+          // 実測ブロック手数料（mempool.space は extras.totalFees を持つ。
+          // 互換 API が持たない場合は null になり proxy へフォールバックする）
+          getJson(`${base}/v1/blocks`).catch(() => null),
+        ]);
 
       const adj = difficultyAdj as Record<string, unknown>;
       const hr = hashrate as Record<string, unknown>;
@@ -132,6 +152,13 @@ export function mempoolSource(baseUrl: string): NetworkSource {
         estimatedAdjustmentRate: requireRange("adjustment", adj.difficultyChange, -80, 400) / 100,
         mempoolTxCount: requireRange("mempoolTxCount", mp.count, 0, 100_000_000),
         recommendedFeeSatPerVb: requireRange("fee", fe.halfHourFee, 0, 100_000),
+        avgBlockFeesBtc: Array.isArray(recentBlocks)
+          ? trimmedMeanBlockFeesBtc(
+              recentBlocks
+                .map((b) => Number((b as { extras?: { totalFees?: unknown } }).extras?.totalFees))
+                .filter((v) => Number.isFinite(v)),
+            )
+          : null,
       };
     },
   };
@@ -162,6 +189,7 @@ export function blockchainInfoSource(baseUrl: string): NetworkSource {
         estimatedAdjustmentRate: 0,
         mempoolTxCount: 0,
         recommendedFeeSatPerVb: 0,
+        avgBlockFeesBtc: null,
       };
     },
   };
@@ -215,6 +243,7 @@ export function bitcoinRpcSource(url: string): NetworkSource {
         estimatedAdjustmentRate: 0,
         mempoolTxCount: requireRange("mempoolTxCount", mempoolInfo.size, 0, 100_000_000),
         recommendedFeeSatPerVb: 0,
+        avgBlockFeesBtc: null,
       };
     },
   };
@@ -254,6 +283,8 @@ export const mockNetworkSource: NetworkSource = {
       estimatedAdjustmentRate: 0.021,
       mempoolTxCount: 18_000 + Math.floor((Math.sin(days * 2.7) + 1) * 6000),
       recommendedFeeSatPerVb: 3 + Math.floor((Math.sin(days * 3.1) + 1) * 4),
+      // Mock なので決定的な擬似値（実測が無いことは source=mock で判別できる）
+      avgBlockFeesBtc: 0.02 + 0.01 * (Math.sin(days * 1.3) + 1),
     };
   },
 };
