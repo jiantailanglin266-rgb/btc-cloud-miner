@@ -920,6 +920,11 @@ export type HashpowerOrder = {
   spentBtc: BtcAmount;
   /** この注文期間中に採掘できたと推定/実測される BTC */
   minedBtc: BtcAmount;
+  /**
+   * 発注時点の期待採掘量（Order-level PnL 分析・予測誤差学習用）。
+   * クローズ時に minedBtc と比較して forecastError を測定する。
+   */
+  expectedBtc: BtcAmount;
   startedAt: ISODateString | null;
   stoppedAt: ISODateString | null;
   /** 決定時のスナップショット ID（説明可能性） */
@@ -957,6 +962,11 @@ export type DecisionSnapshot = {
     marketFactor: number;
     safetyMarginRate: number;
     dataMode: SourceMode;
+    /** 実測ボラティリティ（CoV ベース 0〜1）と出所 */
+    volatility: number;
+    volatilitySource: "MEASURED" | "DEFAULT";
+    /** pool 効率・reject 率の出所（実測 or 既定値） */
+    poolPerformanceSource: "MEASURED" | "DEFAULT";
   };
   /** 計算結果 */
   outputs: {
@@ -968,6 +978,12 @@ export type DecisionSnapshot = {
     maxBidPriceBtcPerFactorDay: number;
     spreadUsdPerHourAt1Ph: number | null;
     spreadJpyPerHourAt1Ph: number | null;
+    /** 板を歩いた実効価格（VWAP）。深さ不足なら null */
+    effectivePriceBtcPerFactorDay: number | null;
+    /** 最安値からの乖離率（スリッページ） */
+    slippageRate: number | null;
+    /** maxBid 以下で調達可能な量（TH/s） */
+    fillableThsAtMaxBid: number;
   };
   action: ArbitrageAction;
   reasons: string[];
@@ -996,6 +1012,8 @@ export type ArbitrageState = {
   performanceFeeRate: number;
   /** High-Water Mark（累積実現純益のピーク・BTC） */
   highWaterMarkBtc: BtcAmount;
+  /** 累積実現 PnL（全期間・BTC）。ドローダウンは max(HWM−累積, 0)/HWM で厳密に算出 */
+  cumulativePnlBtc: BtcAmount;
   /** 予測誤差の指数移動平均（|expected-actual|/expected） */
   forecastErrorEma: number;
   /** 日次カウンタ（dayKey が変わったらリセット） */

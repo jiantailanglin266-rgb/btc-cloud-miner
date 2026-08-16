@@ -164,6 +164,8 @@ function decisionInput(over: Partial<DecisionInput> = {}): DecisionInput {
     minRuntimeSec: 300,
     maxRuntimeSec: 1800,
     forecastErrorEma: 0.1,
+    dataMode: "LIVE_API",
+    depthSufficient: true,
     ...over,
   };
 }

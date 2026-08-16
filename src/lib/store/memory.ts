@@ -136,6 +136,7 @@ export function defaultArbitrageState(tenantId: string): ArbitrageState {
     maxDrawdownRate: config.arbitrage.maxDrawdownRate,
     performanceFeeRate: config.arbitrage.performanceFeeRate,
     highWaterMarkBtc: "0.00000000",
+    cumulativePnlBtc: "0.00000000",
     forecastErrorEma: 0.1, // 初期は控えめな不確実性を仮定
     dayKey: new Date().toISOString().slice(0, 10),
     daySpentBtc: "0.00000000",

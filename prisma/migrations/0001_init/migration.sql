@@ -495,6 +495,7 @@ CREATE TABLE "hashpower_orders" (
     "amountBtc" DECIMAL(18,8) NOT NULL,
     "spentBtc" DECIMAL(18,8) NOT NULL DEFAULT 0,
     "minedBtc" DECIMAL(18,8) NOT NULL DEFAULT 0,
+    "expectedBtc" DECIMAL(18,8) NOT NULL DEFAULT 0,
     "startedAt" TIMESTAMP(3),
     "stoppedAt" TIMESTAMP(3),
     "decisionSnapshotId" TEXT,
@@ -556,6 +557,7 @@ CREATE TABLE "arbitrage_states" (
     "maxDrawdownRate" DOUBLE PRECISION NOT NULL,
     "performanceFeeRate" DOUBLE PRECISION NOT NULL,
     "highWaterMarkBtc" DECIMAL(18,8) NOT NULL DEFAULT 0,
+    "cumulativePnlBtc" DECIMAL(18,8) NOT NULL DEFAULT 0,
     "forecastErrorEma" DOUBLE PRECISION NOT NULL DEFAULT 0.1,
     "dayKey" TEXT NOT NULL,
     "daySpentBtc" DECIMAL(18,8) NOT NULL DEFAULT 0,
@@ -758,14 +760,4 @@ ALTER TABLE "notifications" ADD CONSTRAINT "notifications_userId_fkey" FOREIGN K
 
 -- AddForeignKey
 ALTER TABLE "support_tickets" ADD CONSTRAINT "support_tickets_userId_fkey" FOREIGN KEY ("userId") REFERENCES "users"("id") ON DELETE CASCADE ON UPDATE CASCADE;
-┌─────────────────────────────────────────────────────────┐
-│  Update available 6.19.3 -> 7.9.1                       │
-│                                                         │
-│  This is a major update - please follow the guide at    │
-│  https://pris.ly/d/major-version-upgrade                │
-│                                                         │
-│  Run the following to update                            │
-│    npm i --save-dev prisma@latest                       │
-│    npm i @prisma/client@latest                          │
-└─────────────────────────────────────────────────────────┘
 

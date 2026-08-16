@@ -58,6 +58,18 @@ Secret はログ・例外・ヘッダダンプに出さない（テストで検�
 | 失敗時セーフティ | Pool/NiceHash オフライン・データ stale・Ledger 不整合・照合エラー時は新規注文禁止 |
 | 説明可能性 | 全スキャンの入力・計算・判定・理由を DecisionSnapshot として保存 |
 
+## 4.5 精密化（v2）
+
+| # | 項目 | 内容 |
+|---|---|---|
+| 1 | **板 VWAP・スリッページ** | 最安値ではなく、必要量を板から実際に集めた場合の数量加重平均価格で判定（二段階評価: best価格で概算サイズ→そのサイズのVWAPで最終判定）。深さ不足・maxBid以下で9割調達できない場合は WAIT |
+| 2 | **実測 Pool 効率/Reject** | 直近24hの実ワーカースナップショット（mock除外・トリム平均）から測定。12件未満は既定値へフォールバックし、出所（MEASURED/DEFAULT）を DecisionSnapshot に記録 |
+| 3 | **実測ボラティリティ** | 直近24hのNH価格の変動係数（σ/μ×3、0〜1クランプ）。ポジションサイズの縮小係数に使用 |
+| 4 | **信頼度の出所係数** | confidence = (1−予測誤差EMA) × 出所係数（LIVE_API 1.0 / STALE 0.6 / MOCK・FIXTURE 0.85）。式は理由文に明記 |
+| 5 | **予測誤差の学習** | 注文クローズ時に \|expected−actual\|/expected を EMA(α=0.2) で更新 → Adaptive Safety Margin と信頼度に自動反映 |
+| 6 | **厳密ドローダウン** | 累積実現PnL（cumulativePnlBtc）を状態に保持し、peak=max(HWM,累積) からの下落率で算出 |
+| 7 | **Order-level 分散** | 注文に expectedBtc を保存し、Expected/Actual/Variance を注文テーブルに表示（どの注文の予測が外れたか追跡可能） |
+
 ## 5. 会計の絶対原則
 
 - **Expected（期待値）を Ledger に入れない**。Ledger に入るのは実 Pool payout と実 NiceHash コストから計算した Actual Net Profit のみ

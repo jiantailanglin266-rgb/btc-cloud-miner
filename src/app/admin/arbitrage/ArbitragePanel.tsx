@@ -17,6 +17,17 @@ import { formatRelative, formatUsd } from "@/lib/format";
 import type { ArbitrageState, DecisionSnapshot, HashpowerOrder } from "@/types";
 import type { ScanResult } from "@/modules/arbitrage/scanner";
 
+/** snapshot outputs へのアクセサ（板 walker の結果） */
+function scanOutputs(scan: ScanResult): {
+  slippageRate: number | null;
+  fillableThsAtMaxBid: number;
+} {
+  return {
+    slippageRate: scan.outputs?.slippageRate ?? null,
+    fillableThsAtMaxBid: scan.outputs?.fillableThsAtMaxBid ?? 0,
+  };
+}
+
 /** Traffic Light（フェーズ33）: 色 + 必ず数値と理由を併記する */
 const LIGHT: Record<string, { color: string; bg: string; label: string }> = {
   BUY: { color: "text-pos", bg: "border-pos/50 bg-pos/10", label: "GREEN — 購入候補" },
@@ -109,8 +120,20 @@ export function ArbitragePanel({
             <KeyValue label="Network Difficulty" value={scan.inputs.difficulty.toExponential(3)} />
             <KeyValue label="期待収益（BTC/PH/day）"
               value={(p.expectedRevenueBtcPerThDay * 1000).toFixed(6)} />
-            <KeyValue label="NiceHash 現在価格（BTC/PH/day）"
+            <KeyValue label="NiceHash 実効価格（VWAP・BTC/PH/day）"
               value={scan.inputs.nicehashPriceBtcPerFactorDay?.toFixed(6) ?? "取得不可"} />
+            <KeyValue label="スリッページ（最安値→VWAP）"
+              value={
+                scanOutputs(scan).slippageRate !== null
+                  ? `${((scanOutputs(scan).slippageRate ?? 0) * 100).toFixed(2)}%`
+                  : "—"
+              } />
+            <KeyValue label="maxBid以下の板の深さ"
+              value={`${scanOutputs(scan).fillableThsAtMaxBid.toFixed(0)} TH/s`} />
+            <KeyValue label="Pool効率/Reject（出所）"
+              value={`${(scan.inputs.expectedPoolEfficiency * 100).toFixed(1)}% / ${(scan.inputs.expectedRejectRate * 100).toFixed(2)}%（${scan.inputs.poolPerformanceSource === "MEASURED" ? "実測" : "既定値"}）`} />
+            <KeyValue label="ボラティリティ（出所）"
+              value={`${(scan.inputs.volatility * 100).toFixed(1)}%（${scan.inputs.volatilitySource === "MEASURED" ? "実測CoV" : "既定値"}）`} />
             <KeyValue label="Break-even 価格（BTC/PH/day）"
               value={p.breakEvenPriceBtcPerFactorDay.toFixed(6)} />
             <KeyValue label="発注上限価格（Max Bid）"
@@ -148,11 +171,14 @@ export function ArbitragePanel({
             <div className="scroll-x">
               <table>
                 <thead>
-                  <tr><th>Mode</th><th>状態</th><th>TH/s</th><th>価格</th><th>支出</th><th>採掘(期待)</th><th>PnL</th><th>期間</th></tr>
+                  <tr><th>Mode</th><th>状態</th><th>TH/s</th><th>価格</th><th>支出</th><th>Expected</th><th>Actual</th><th>Variance</th><th>PnL</th><th>期間</th></tr>
                 </thead>
                 <tbody>
                   {orders.map((o) => {
                     const pnl = Number(o.minedBtc) - Number(o.spentBtc);
+                    const expected = Number(o.expectedBtc);
+                    const variance =
+                      expected > 0 ? (Number(o.minedBtc) - expected) / expected : null;
                     return (
                       <tr key={o.id}>
                         <td><Badge tone={o.mode === "live" ? "offline" : "demo"}>{o.mode.toUpperCase()}</Badge></td>
@@ -160,7 +186,20 @@ export function ArbitragePanel({
                         <td>{o.requestedThs.toFixed(0)}</td>
                         <td className="text-[11px]">{o.priceBtcPerFactorDay.toFixed(6)}</td>
                         <td className="text-neg text-[11px]">{o.spentBtc}</td>
+                        <td className="text-[11px] text-ink-dim">{o.expectedBtc}</td>
                         <td className="text-[11px]">{o.minedBtc}</td>
+                        <td
+                          className={
+                            variance === null
+                              ? "text-ink-dim"
+                              : Math.abs(variance) < 0.15
+                                ? "text-pos"
+                                : "text-warn"
+                          }
+                          title="（実績−期待）/期待。予測誤差EMAの学習に使われる"
+                        >
+                          {variance !== null ? `${(variance * 100).toFixed(1)}%` : "—"}
+                        </td>
                         <td className={pnl >= 0 ? "text-pos" : "text-neg"}>{pnl.toFixed(8)}</td>
                         <td className="text-[11px] text-ink-dim">
                           {o.startedAt ? formatRelative(o.startedAt) : "—"}

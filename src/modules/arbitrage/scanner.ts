@@ -27,6 +27,7 @@ import { getNetworkAndPrice } from "@/modules/bitcoin/service";
 import { getProviderHealth } from "@/modules/provider/registry";
 import { NiceHashAdapter, SHA256_ALGORITHM } from "@/modules/hashpower/nicehash";
 import { priceFactorDayToBtcPerThDay } from "@/modules/hashpower/units";
+import { effectivePriceForHashrate, depthBelowPrice } from "@/modules/hashpower/orderbook";
 import {
   calculateProfitability,
   type ProfitabilityInput,
@@ -34,6 +35,7 @@ import {
 } from "./engine";
 import { decide, adaptiveSafetyMargin, type Decision } from "./decision";
 import { sizePosition, checkRiskLimits } from "./position";
+import { measurePoolPerformance, measureVolatility } from "./measured";
 import { raiseAlert } from "@/modules/monitoring/alerts";
 
 export type ScanResult = {
@@ -47,6 +49,7 @@ export type ScanResult = {
   activeOrders: number;
   paperAction: string | null;
   inputs: DecisionSnapshot["inputs"];
+  outputs: DecisionSnapshot["outputs"];
 };
 
 /** 平均ブロック手数料の近似: 推奨fee(sat/vB) × 標準ブロック 1,000,000 vB */
@@ -98,7 +101,14 @@ export async function runOpportunityScan(tenantId: string): Promise<ScanResult> 
   const activeThs = activeOrders.reduce((s, o) => s + (o.deliveredThs ?? o.requestedThs), 0);
 
   const marketFactor = orderbook?.marketFactor ?? 1e15;
-  const profitInput: ProfitabilityInput = {
+
+  // --- 実測パラメータ（精密化 #2・#3。不足時は既定値へフォールバック） -----
+  const [poolPerf, vol] = await Promise.all([
+    measurePoolPerformance(tenantId),
+    measureVolatility(),
+  ]);
+
+  const baseInput: Omit<ProfitabilityInput, "nicehashPriceBtcPerFactorDay"> = {
     btcPriceUsd: price.usd,
     usdJpy,
     difficulty: network.difficulty,
@@ -106,9 +116,8 @@ export async function runOpportunityScan(tenantId: string): Promise<ScanResult> 
     blockSubsidyBtc: network.blockRewardBtc,
     avgTxFeesBtcPerBlock: estimateAvgTxFeesBtcPerBlock(network.recommendedFeeSatPerVb),
     poolFeeRate: config.fees.poolFeeRate,
-    expectedPoolEfficiency: 0.97,
-    expectedRejectRate: 0.01,
-    nicehashPriceBtcPerFactorDay: orderbook?.currentPriceBtcPerFactorDay ?? null,
+    expectedPoolEfficiency: poolPerf.efficiency,
+    expectedRejectRate: poolPerf.rejectRate,
     nicehashMarketFeeRate: fees.marketFeeRate,
     nicehashOrderFeeBtc: fees.orderFeeBtc,
     marketFactor,
@@ -116,7 +125,39 @@ export async function runOpportunityScan(tenantId: string): Promise<ScanResult> 
     // 固定注文手数料は 1 注文予算（上限）に対する率として評価する
     plannedSpendBtc: Number(state.maxOrderBtc),
   };
-  const profitability = calculateProfitability(profitInput);
+
+  // --- 二段階評価（精密化 #1: スリッページ） --------------------------------
+  // Pass 1: 板の最良価格で概算し、暫定の発注量を求める
+  const pass1 = calculateProfitability({
+    ...baseInput,
+    nicehashPriceBtcPerFactorDay: orderbook?.currentPriceBtcPerFactorDay ?? null,
+  });
+  const roughThs =
+    pass1.costBtcPerThDay !== null
+      ? Math.min(
+          state.maxHashrateThs,
+          Number(state.maxOrderBtc) /
+            (pass1.costBtcPerThDay * (state.maxRuntimeSec / 86_400)),
+        )
+      : 0;
+
+  // Pass 2: その量を板から実際に集めた場合の VWAP で再評価（これが最終判定に使われる）
+  const walk =
+    orderbook && roughThs > 0
+      ? effectivePriceForHashrate(orderbook, roughThs)
+      : null;
+  const effectivePrice =
+    walk?.vwapPriceBtcPerFactorDay ??
+    orderbook?.currentPriceBtcPerFactorDay ??
+    null;
+  const profitability = calculateProfitability({
+    ...baseInput,
+    nicehashPriceBtcPerFactorDay: effectivePrice,
+  });
+  // maxBid 以下の板の深さ（発注可否の判定材料）
+  const fillableThsAtMaxBid = orderbook
+    ? depthBelowPrice(orderbook, profitability.maxBidPriceBtcPerFactorDay)
+    : 0;
 
   // --- 3. リスク状態 → Decision --------------------------------------------
   const poolOnline = providerHealth.some(
@@ -164,6 +205,9 @@ export async function runOpportunityScan(tenantId: string): Promise<ScanResult> 
     minRuntimeSec: state.minRuntimeSec,
     maxRuntimeSec: state.maxRuntimeSec,
     forecastErrorEma: state.forecastErrorEma,
+    dataMode,
+    // 深さ判定: 暫定量の9割以上を maxBid 以下で調達できること
+    depthSufficient: roughThs <= 0 || fillableThsAtMaxBid >= roughThs * 0.9,
   });
   if (riskViolations.length > 0) decision.reasons.push(...riskViolations);
 
@@ -178,17 +222,21 @@ export async function runOpportunityScan(tenantId: string): Promise<ScanResult> 
       availableBtc: balance.availableBtc,
       expectedMarginRate: profitability.expectedMarginRate ?? 0,
       confidence: decision.confidence,
-      volatility: 0.3, // TODO(live): 直近サンプルの価格変動係数から算出
+      volatility: vol.volatility, // 実測 CoV（不足時は既定値・出所は snapshot に記録）
       recentPnlBtc: state.dayPnlBtc,
       drawdownRate,
       costBtcPerThDay: profitability.costBtcPerThDay,
       maxRuntimeSec: state.maxRuntimeSec,
     });
-    // 1注文上限でクランプ
+    // 1注文上限・ハッシュレート上限・板の深さ（maxBid以下の実在量）でクランプ
     const spendSat = toSat(sized.maxSpendBtc);
     const capSat = toSat(state.maxOrderBtc);
     maxSpendBtc = fromSat(spendSat > capSat ? capSat : spendSat);
-    recommendedThs = Math.min(sized.recommendedThs, state.maxHashrateThs);
+    recommendedThs = Math.min(
+      sized.recommendedThs,
+      state.maxHashrateThs,
+      Math.floor(fillableThsAtMaxBid),
+    );
   }
 
   // --- 5. DecisionSnapshot（必ず保存） --------------------------------------
@@ -202,16 +250,19 @@ export async function runOpportunityScan(tenantId: string): Promise<ScanResult> 
       difficulty: network.difficulty,
       networkHashrateThs: network.networkHashrateThs,
       blockSubsidyBtc: network.blockRewardBtc,
-      avgTxFeesBtcPerBlock: profitInput.avgTxFeesBtcPerBlock,
-      poolFeeRate: profitInput.poolFeeRate,
-      expectedPoolEfficiency: profitInput.expectedPoolEfficiency,
-      expectedRejectRate: profitInput.expectedRejectRate,
-      nicehashPriceBtcPerFactorDay: profitInput.nicehashPriceBtcPerFactorDay,
-      nicehashMarketFeeRate: profitInput.nicehashMarketFeeRate,
-      nicehashOrderFeeBtc: profitInput.nicehashOrderFeeBtc,
+      avgTxFeesBtcPerBlock: baseInput.avgTxFeesBtcPerBlock,
+      poolFeeRate: baseInput.poolFeeRate,
+      expectedPoolEfficiency: baseInput.expectedPoolEfficiency,
+      expectedRejectRate: baseInput.expectedRejectRate,
+      nicehashPriceBtcPerFactorDay: effectivePrice,
+      nicehashMarketFeeRate: baseInput.nicehashMarketFeeRate,
+      nicehashOrderFeeBtc: baseInput.nicehashOrderFeeBtc,
       marketFactor,
       safetyMarginRate: state.safetyMarginRate,
       dataMode,
+      volatility: vol.volatility,
+      volatilitySource: vol.source,
+      poolPerformanceSource: poolPerf.source,
     },
     outputs: {
       expectedRevenueBtcPerThDay: profitability.expectedRevenueBtcPerThDay,
@@ -222,6 +273,9 @@ export async function runOpportunityScan(tenantId: string): Promise<ScanResult> 
       maxBidPriceBtcPerFactorDay: profitability.maxBidPriceBtcPerFactorDay,
       spreadUsdPerHourAt1Ph: profitability.spreadUsdPerHourAt1Ph,
       spreadJpyPerHourAt1Ph: profitability.spreadJpyPerHourAt1Ph,
+      effectivePriceBtcPerFactorDay: walk?.vwapPriceBtcPerFactorDay ?? null,
+      slippageRate: walk?.slippageRate ?? null,
+      fillableThsAtMaxBid,
     },
     action: decision.action,
     reasons: decision.reasons,
@@ -242,10 +296,10 @@ export async function runOpportunityScan(tenantId: string): Promise<ScanResult> 
       difficulty: network.difficulty,
       networkHashrateThs: network.networkHashrateThs,
       blockSubsidyBtc: network.blockRewardBtc,
-      avgTxFeesBtcPerBlock: profitInput.avgTxFeesBtcPerBlock,
+      avgTxFeesBtcPerBlock: baseInput.avgTxFeesBtcPerBlock,
       nicehashPriceBtcPerFactorDay: orderbook.currentPriceBtcPerFactorDay,
       nicehashAvailableFactor: orderbook.totalAvailableSpeedFactor,
-      poolEfficiency: profitInput.expectedPoolEfficiency,
+      poolEfficiency: baseInput.expectedPoolEfficiency,
       sourceMode: dataMode,
     });
   }
@@ -271,6 +325,7 @@ export async function runOpportunityScan(tenantId: string): Promise<ScanResult> 
     activeOrders: activeOrders.length,
     paperAction,
     inputs: snapshot.inputs,
+    outputs: snapshot.outputs,
   };
 }
 
@@ -297,7 +352,9 @@ async function manageOrders(
 
   // 稼働中注文の paper 精算（経過時間ぶんのコスト・期待採掘を積む）
   for (const order of active) {
-    if (order.mode !== "live") await accruePaperOrder(tenantId, order, profitability);
+    if (order.mode !== "live") {
+      await accruePaperOrder(tenantId, order, profitability, state.safetyMarginRate);
+    }
   }
 
   if (decision.action === "STOP" && active.length > 0) {
@@ -337,6 +394,12 @@ async function manageOrders(
     amountBtc: ctx.maxSpendBtc,
     spentBtc: fromSat(toSat(config.nicehash.orderFeeBtc.toFixed(8))), // 注文固定手数料を初期コストに計上
     minedBtc: "0.00000000",
+    // 発注時点の期待採掘量（クローズ時に実績と比較して予測誤差を学習する）
+    expectedBtc: (
+      profitability.expectedRevenueBtcPerThDay *
+      ctx.recommendedThs *
+      (state.maxRuntimeSec / 86_400)
+    ).toFixed(8),
     startedAt: now,
     stoppedAt: null,
     decisionSnapshotId: snapshotId,
@@ -382,11 +445,17 @@ async function manageOrders(
   return `${order.mode} order created: ${ctx.recommendedThs} TH/s @ ${bidPrice.toFixed(6)}`;
 }
 
-/** paper 注文のコスト・期待採掘の積み上げ（経過時間按分） */
+/**
+ * paper 注文のコスト・期待採掘の積み上げ（経過時間按分）。
+ * ★「採掘量」は安全マージン控除前の物理期待値で記録する。
+ *   安全マージンは判断バッファであり物理現象ではないため、
+ *   これを含めたままだと expected vs actual の誤差測定が歪む。
+ */
 async function accruePaperOrder(
   tenantId: string,
   order: HashpowerOrder,
   profitability: ProfitabilityResult,
+  safetyMarginRate: number,
 ): Promise<void> {
   const store = await getStore();
   const lastMs = new Date(order.updatedAt).getTime();
@@ -396,12 +465,10 @@ async function accruePaperOrder(
   const ths = order.deliveredThs ?? order.requestedThs;
   const costDensity = priceFactorDayToBtcPerThDay(order.priceBtcPerFactorDay, 1e15);
   const cost = costDensity * ths * dtDays * (1 + config.nicehash.marketFeeRate);
-  // paper の「採掘量」は期待値ベース（安全マージン控除前の素の期待で記録し、乖離を観察する）
-  const mined =
-    (profitability.expectedRevenueBtcPerThDay /
-      Math.max(0.0001, 1 - 0 /* margin は既に控除済みの値を使う */)) *
-    ths *
-    dtDays;
+  // 安全マージン控除を戻した物理期待値
+  const physicalDensity =
+    profitability.expectedRevenueBtcPerThDay / Math.max(0.5, 1 - safetyMarginRate);
+  const mined = physicalDensity * ths * dtDays;
 
   const spentBtc = addBtc(order.spentBtc, cost.toFixed(8));
   const minedBtc = addBtc(order.minedBtc, mined.toFixed(8));
@@ -418,7 +485,12 @@ async function accruePaperOrder(
   });
 }
 
-/** 注文のクローズと仮想 PnL の日次計上 */
+/**
+ * 注文のクローズ。
+ *   - PnL を日次・累積カウンタへ計上（精密化 #6: 累積からドローダウンを厳密算出）
+ *   - expected vs actual の予測誤差で forecastErrorEma を更新（精密化 #5: 学習）
+ *     → 次回以降の Adaptive Safety Margin・信頼度に反映される
+ */
 async function closeOrder(
   tenantId: string,
   order: HashpowerOrder,
@@ -459,8 +531,19 @@ async function closeOrder(
     reason,
     updatedAt: new Date().toISOString(),
   });
+
+  // 予測誤差の学習: |expected − actual| / expected を EMA（α=0.2）で更新
+  const expected = Number(order.expectedBtc);
+  let forecastErrorEma = state.forecastErrorEma;
+  if (expected > 0) {
+    const err = Math.min(1, Math.abs(Number(order.minedBtc) - expected) / expected);
+    forecastErrorEma = Math.round((state.forecastErrorEma * 0.8 + err * 0.2) * 10_000) / 10_000;
+  }
+
   await store.updateArbitrageState(tenantId, {
     dayPnlBtc: addBtc(state.dayPnlBtc, pnl),
+    cumulativePnlBtc: addBtc(state.cumulativePnlBtc, pnl),
+    forecastErrorEma,
   });
 }
 
@@ -482,10 +565,18 @@ async function rollDay(
   });
 }
 
-/** HWM に対する現在の下振れ率（0〜1）。累積 PnL は HWM + 日次で近似 */
+/**
+ * ドローダウン率（0〜1）を累積実現 PnL から厳密に算出する（精密化 #6）。
+ *   equity_peak = max(HWM, 累積PnL)  /  DD = (peak − 累積PnL) / max(peak, ε)
+ * HWM がまだゼロ（利益未達）の場合は、累積損失を maxDailyLoss×10 を分母に正規化する。
+ */
 function computeDrawdown(state: ArbitrageState): number {
-  const hwm = Number(state.highWaterMarkBtc);
-  const current = hwm + Number(state.dayPnlBtc);
-  if (hwm <= 0) return current < 0 ? Math.min(1, -current / 0.01) : 0;
-  return Math.max(0, Math.min(1, (hwm - current) / hwm));
+  const cumulative = Number(state.cumulativePnlBtc);
+  const peak = Math.max(Number(state.highWaterMarkBtc), cumulative);
+  if (peak > 0) {
+    return Math.max(0, Math.min(1, (peak - cumulative) / peak));
+  }
+  if (cumulative >= 0) return 0;
+  const denom = Math.max(1e-8, Number(state.maxDailyLossBtc) * 10);
+  return Math.min(1, -cumulative / denom);
 }

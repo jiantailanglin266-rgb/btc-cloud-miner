@@ -7,8 +7,22 @@
  * ★ 判断根拠（reasons）を必ず添付する（AI ブラックボックス禁止・説明可能性）。
  */
 
-import type { ArbitrageAction } from "@/types";
+import type { ArbitrageAction, SourceMode } from "@/types";
 import type { ProfitabilityResult } from "./engine";
+
+/**
+ * データ出所による信頼度係数（精密化 #4・式公開）。
+ *   LIVE_API   … 1.00（実 API 直近値）
+ *   STALE_LIVE … 0.60（実データだが古い。判断材料としては大幅減点）
+ *   FIXTURE    … 0.85（記録済み実形式データ）
+ *   MOCK       … 0.85（擬似。デモで判定ロジック自体は検証できるよう過度に落とさない）
+ */
+export const DATA_MODE_CONFIDENCE: Record<SourceMode, number> = {
+  LIVE_API: 1.0,
+  STALE_LIVE: 0.6,
+  FIXTURE: 0.85,
+  MOCK: 0.85,
+};
 
 export type DecisionInput = {
   profitability: ProfitabilityResult;
@@ -33,6 +47,13 @@ export type DecisionInput = {
   maxRuntimeSec: number;
   /** 予測誤差 EMA（0.0〜）。信頼度の算出に使う */
   forecastErrorEma: number;
+  /** 市場データの出所。信頼度係数に反映される */
+  dataMode: SourceMode;
+  /**
+   * 発注に必要な量が maxBid 以下の板で調達可能か（深さ判定）。
+   * false のとき新規 BUY は WAIT（部分的にしか埋まらない注文を出さない）
+   */
+  depthSufficient: boolean;
 };
 
 export type Decision = {
@@ -76,7 +97,10 @@ export function adaptiveSafetyMargin(forecastErrorEma: number): number {
 export function decide(input: DecisionInput): Decision {
   const reasons: string[] = [];
   const margin = input.profitability.expectedMarginRate;
-  const confidence = confidenceFromForecastError(input.forecastErrorEma);
+  // 信頼度 = (1 − 予測誤差EMA) × データ出所係数（両方とも式公開）
+  const confidence =
+    confidenceFromForecastError(input.forecastErrorEma) *
+    (DATA_MODE_CONFIDENCE[input.dataMode] ?? 0.5);
 
   const numbers = {
     expectedMarginRate: margin,
@@ -179,7 +203,18 @@ export function decide(input: DecisionInput): Decision {
       action: "WAIT",
       confidence,
       reasons: [
-        `信頼度 ${(confidence * 100).toFixed(0)}% < 最低 ${(input.minConfidence * 100).toFixed(0)}%（過去の予測誤差が大きいため見送り）`,
+        `信頼度 ${(confidence * 100).toFixed(0)}% < 最低 ${(input.minConfidence * 100).toFixed(0)}%` +
+          `（= (1−予測誤差EMA ${(input.forecastErrorEma * 100).toFixed(0)}%) × 出所係数 ${DATA_MODE_CONFIDENCE[input.dataMode]}[${input.dataMode}]）`,
+      ],
+      numbers,
+    };
+  }
+  if (!input.depthSufficient) {
+    return {
+      action: "WAIT",
+      confidence,
+      reasons: [
+        "板の深さ不足: 必要ハッシュレートを maxBid 以下で調達できません（部分約定注文を出さない）",
       ],
       numbers,
     };
@@ -189,9 +224,9 @@ export function decide(input: DecisionInput): Decision {
     action: "BUY",
     confidence,
     reasons: [
-      `期待マージン ${(m * 100).toFixed(1)}% ≥ 開始閾値 ${(input.startMarginRate * 100).toFixed(1)}%`,
-      `信頼度 ${(confidence * 100).toFixed(0)}% ≥ ${(input.minConfidence * 100).toFixed(0)}%`,
-      "市場データは新鮮・プール/NiceHash ともにオンライン",
+      `期待マージン ${(m * 100).toFixed(1)}% ≥ 開始閾値 ${(input.startMarginRate * 100).toFixed(1)}%（VWAP実効価格ベース）`,
+      `信頼度 ${(confidence * 100).toFixed(0)}% ≥ ${(input.minConfidence * 100).toFixed(0)}%（誤差EMA ${(input.forecastErrorEma * 100).toFixed(0)}% × 出所 ${input.dataMode}）`,
+      "市場データは新鮮・板の深さ充足・プール/NiceHash ともにオンライン",
     ],
     numbers,
   };

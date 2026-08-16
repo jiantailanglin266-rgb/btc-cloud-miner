@@ -678,6 +678,8 @@ model HashpowerOrder {
   amountBtc            Decimal   @db.Decimal(18, 8)
   spentBtc             Decimal   @db.Decimal(18, 8) @default(0)
   minedBtc             Decimal   @db.Decimal(18, 8) @default(0)
+  /// 発注時点の期待採掘量（Order-level PnL 分析・予測誤差学習用）
+  expectedBtc          Decimal   @db.Decimal(18, 8) @default(0)
   startedAt            DateTime?
   stoppedAt            DateTime?
   decisionSnapshotId   String?
@@ -744,6 +746,8 @@ model ArbitrageState {
   maxDrawdownRate     Float
   performanceFeeRate  Float
   highWaterMarkBtc    Decimal  @db.Decimal(18, 8) @default(0)
+  /// 累積実現 PnL（ドローダウンの厳密算出に使う）
+  cumulativePnlBtc    Decimal  @db.Decimal(18, 8) @default(0)
   forecastErrorEma    Float    @default(0.1)
   dayKey              String
   daySpentBtc         Decimal  @db.Decimal(18, 8) @default(0)
