@@ -660,6 +660,99 @@ model AiInsight {
   @@map("ai_insights")
 }
 
+/// ハッシュパワー注文（paper / live 共通。mode で区別）
+model HashpowerOrder {
+  id                   String    @id
+  tenantId             String
+  /// mock | paper | live
+  mode                 String
+  externalOrderId      String?
+  algorithm            String
+  market               String
+  poolId               String?
+  /// PLANNED | SUBMITTED | ACTIVE | PARTIALLY_FILLED | STOPPING | CANCELLED | COMPLETED | FAILED
+  status               String
+  priceBtcPerFactorDay Decimal   @db.Decimal(18, 8)
+  requestedThs         Decimal   @db.Decimal(14, 4)
+  deliveredThs         Decimal?  @db.Decimal(14, 4)
+  amountBtc            Decimal   @db.Decimal(18, 8)
+  spentBtc             Decimal   @db.Decimal(18, 8) @default(0)
+  minedBtc             Decimal   @db.Decimal(18, 8) @default(0)
+  startedAt            DateTime?
+  stoppedAt            DateTime?
+  decisionSnapshotId   String?
+  reason               String    @default("")
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+
+  @@index([tenantId, status, createdAt])
+  @@map("hashpower_orders")
+}
+
+/// 収益性判定の完全な記録（なぜ注文した/しなかったの説明可能性）
+model DecisionSnapshot {
+  id             String   @id
+  tenantId       String
+  at             DateTime
+  inputs         Json
+  outputs        Json
+  /// BUY | HOLD | STOP | WAIT
+  action         String
+  reasons        Json     @default("[]")
+  confidence     Decimal  @db.Decimal(6, 5)
+  recommendedThs Decimal  @db.Decimal(14, 4)
+  maxSpendBtc    Decimal  @db.Decimal(18, 8)
+
+  @@index([tenantId, at])
+  @@map("decision_snapshots")
+}
+
+/// バックテスト・履歴分析用の市場サンプル（会計データではないため Float 可）
+model MarketSample {
+  id                            String   @id
+  at                            DateTime
+  btcPriceUsd                   Float
+  usdJpy                        Float
+  difficulty                    Float
+  networkHashrateThs            Float
+  blockSubsidyBtc               Float
+  avgTxFeesBtcPerBlock          Float
+  nicehashPriceBtcPerFactorDay  Float
+  nicehashAvailableFactor       Float
+  poolEfficiency                Float
+  /// MOCK | FIXTURE | LIVE_API | STALE_LIVE
+  sourceMode                    String
+
+  @@index([at])
+  @@map("market_samples")
+}
+
+/// テナントごとのアービトラージ設定・状態（HWM・日次カウンタ）
+model ArbitrageState {
+  tenantId            String   @id
+  enabled             Boolean  @default(false)
+  safetyMarginRate    Float
+  startMarginRate     Float
+  stopMarginRate      Float
+  minRuntimeSec       Int
+  maxRuntimeSec       Int
+  maxOrderBtc         Decimal  @db.Decimal(18, 8)
+  maxDailySpendBtc    Decimal  @db.Decimal(18, 8)
+  maxDailyLossBtc     Decimal  @db.Decimal(18, 8)
+  maxConcurrentOrders Int
+  maxHashrateThs      Decimal  @db.Decimal(14, 4)
+  maxDrawdownRate     Float
+  performanceFeeRate  Float
+  highWaterMarkBtc    Decimal  @db.Decimal(18, 8) @default(0)
+  forecastErrorEma    Float    @default(0.1)
+  dayKey              String
+  daySpentBtc         Decimal  @db.Decimal(18, 8) @default(0)
+  dayPnlBtc           Decimal  @db.Decimal(18, 8) @default(0)
+  updatedAt           DateTime @updatedAt
+
+  @@map("arbitrage_states")
+}
+
 /// 冪等キーの記録（API レベルの二重実行防止）
 model IdempotencyKey {
   tenantId  String

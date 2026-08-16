@@ -427,6 +427,74 @@ export const POST = handler(async (req: Request) => {
       return ok(report);
     }
 
+    // --- Hashpower Arbitrage ------------------------------------------------
+    case "run-arbitrage-scan": {
+      const { runOpportunityScan } = await import("@/modules/arbitrage/scanner");
+      const r = await runOpportunityScan(ctx.tenant.id);
+      return ok(r);
+    }
+    case "set-arbitrage-config": {
+      const patch: Record<string, unknown> = {};
+      if (typeof body.enabled === "boolean") patch.enabled = body.enabled;
+      if (typeof body.safetyMarginRate === "number" && body.safetyMarginRate >= 0.05 && body.safetyMarginRate <= 0.5) {
+        patch.safetyMarginRate = body.safetyMarginRate;
+      }
+      if (typeof body.startMarginRate === "number" && body.startMarginRate >= 0.01 && body.startMarginRate <= 0.5) {
+        patch.startMarginRate = body.startMarginRate;
+      }
+      if (typeof body.stopMarginRate === "number" && body.stopMarginRate >= 0 && body.stopMarginRate <= 0.3) {
+        patch.stopMarginRate = body.stopMarginRate;
+      }
+      const state = await store.updateArbitrageState(ctx.tenant.id, patch);
+      await audit({
+        tenantId: ctx.tenant.id,
+        actorUserId: ctx.user.id,
+        actorEmail: ctx.user.email,
+        actorRole: ctx.user.role,
+        action: "arbitrage.config_update",
+        targetType: "arbitrage",
+        targetId: ctx.tenant.id,
+        detail: patch,
+        ip,
+      });
+      return ok({ state });
+    }
+    case "arbitrage-emergency-stop": {
+      // Emergency Stop（フェーズ18・39）: 有効フラグを落とし、アクティブ注文を全停止
+      await store.updateArbitrageState(ctx.tenant.id, { enabled: false });
+      const active = await store.listHashpowerOrders(ctx.tenant.id, { activeOnly: true });
+      let stopped = 0;
+      for (const order of active) {
+        await store.upsertHashpowerOrder({
+          ...order,
+          status: order.mode === "live" ? "STOPPING" : "CANCELLED",
+          stoppedAt: new Date().toISOString(),
+          reason: "Emergency Stop（管理者操作）",
+          updatedAt: new Date().toISOString(),
+        });
+        stopped++;
+      }
+      await audit({
+        tenantId: ctx.tenant.id,
+        actorUserId: ctx.user.id,
+        actorEmail: ctx.user.email,
+        actorRole: ctx.user.role,
+        action: "arbitrage.emergency_stop",
+        targetType: "arbitrage",
+        targetId: ctx.tenant.id,
+        detail: { stopped },
+        ip,
+      });
+      return ok({ stopped });
+    }
+    case "run-backtest": {
+      const { runBacktest } = await import("@/modules/arbitrage/backtest");
+      const toMs = Date.now();
+      const fromMs = toMs - 365 * 86_400_000;
+      const report = await runBacktest({ fromMs, toMs });
+      return ok(report);
+    }
+
     // --- アラートの確認 ------------------------------------------------------
     case "acknowledge-alert": {
       const id = typeof body.alertId === "string" ? body.alertId : null;

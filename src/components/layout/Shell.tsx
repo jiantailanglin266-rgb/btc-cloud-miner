@@ -26,6 +26,8 @@ export const ADMIN_NAV: NavItem[] = [
   { href: "/admin", label: "概要", icon: "⌂" },
   { href: "/admin/users", label: "ユーザー", icon: "☰" },
   { href: "/admin/withdrawals", label: "出金承認", icon: "⬢" },
+  { href: "/admin/arbitrage", label: "Arbitrage", icon: "⇄" },
+  { href: "/admin/backtest", label: "Backtest", icon: "◔" },
   { href: "/admin/allocation", label: "収益配賦", icon: "¥" },
   { href: "/admin/reconciliation", label: "照合", icon: "⚖" },
   { href: "/admin/ledger", label: "元帳", icon: "▤" },

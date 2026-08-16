@@ -480,6 +480,92 @@ CREATE TABLE "ai_insights" (
 );
 
 -- CreateTable
+CREATE TABLE "hashpower_orders" (
+    "id" TEXT NOT NULL,
+    "tenantId" TEXT NOT NULL,
+    "mode" TEXT NOT NULL,
+    "externalOrderId" TEXT,
+    "algorithm" TEXT NOT NULL,
+    "market" TEXT NOT NULL,
+    "poolId" TEXT,
+    "status" TEXT NOT NULL,
+    "priceBtcPerFactorDay" DECIMAL(18,8) NOT NULL,
+    "requestedThs" DECIMAL(14,4) NOT NULL,
+    "deliveredThs" DECIMAL(14,4),
+    "amountBtc" DECIMAL(18,8) NOT NULL,
+    "spentBtc" DECIMAL(18,8) NOT NULL DEFAULT 0,
+    "minedBtc" DECIMAL(18,8) NOT NULL DEFAULT 0,
+    "startedAt" TIMESTAMP(3),
+    "stoppedAt" TIMESTAMP(3),
+    "decisionSnapshotId" TEXT,
+    "reason" TEXT NOT NULL DEFAULT '',
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL,
+
+    CONSTRAINT "hashpower_orders_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "decision_snapshots" (
+    "id" TEXT NOT NULL,
+    "tenantId" TEXT NOT NULL,
+    "at" TIMESTAMP(3) NOT NULL,
+    "inputs" JSONB NOT NULL,
+    "outputs" JSONB NOT NULL,
+    "action" TEXT NOT NULL,
+    "reasons" JSONB NOT NULL DEFAULT '[]',
+    "confidence" DECIMAL(6,5) NOT NULL,
+    "recommendedThs" DECIMAL(14,4) NOT NULL,
+    "maxSpendBtc" DECIMAL(18,8) NOT NULL,
+
+    CONSTRAINT "decision_snapshots_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "market_samples" (
+    "id" TEXT NOT NULL,
+    "at" TIMESTAMP(3) NOT NULL,
+    "btcPriceUsd" DOUBLE PRECISION NOT NULL,
+    "usdJpy" DOUBLE PRECISION NOT NULL,
+    "difficulty" DOUBLE PRECISION NOT NULL,
+    "networkHashrateThs" DOUBLE PRECISION NOT NULL,
+    "blockSubsidyBtc" DOUBLE PRECISION NOT NULL,
+    "avgTxFeesBtcPerBlock" DOUBLE PRECISION NOT NULL,
+    "nicehashPriceBtcPerFactorDay" DOUBLE PRECISION NOT NULL,
+    "nicehashAvailableFactor" DOUBLE PRECISION NOT NULL,
+    "poolEfficiency" DOUBLE PRECISION NOT NULL,
+    "sourceMode" TEXT NOT NULL,
+
+    CONSTRAINT "market_samples_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "arbitrage_states" (
+    "tenantId" TEXT NOT NULL,
+    "enabled" BOOLEAN NOT NULL DEFAULT false,
+    "safetyMarginRate" DOUBLE PRECISION NOT NULL,
+    "startMarginRate" DOUBLE PRECISION NOT NULL,
+    "stopMarginRate" DOUBLE PRECISION NOT NULL,
+    "minRuntimeSec" INTEGER NOT NULL,
+    "maxRuntimeSec" INTEGER NOT NULL,
+    "maxOrderBtc" DECIMAL(18,8) NOT NULL,
+    "maxDailySpendBtc" DECIMAL(18,8) NOT NULL,
+    "maxDailyLossBtc" DECIMAL(18,8) NOT NULL,
+    "maxConcurrentOrders" INTEGER NOT NULL,
+    "maxHashrateThs" DECIMAL(14,4) NOT NULL,
+    "maxDrawdownRate" DOUBLE PRECISION NOT NULL,
+    "performanceFeeRate" DOUBLE PRECISION NOT NULL,
+    "highWaterMarkBtc" DECIMAL(18,8) NOT NULL DEFAULT 0,
+    "forecastErrorEma" DOUBLE PRECISION NOT NULL DEFAULT 0.1,
+    "dayKey" TEXT NOT NULL,
+    "daySpentBtc" DECIMAL(18,8) NOT NULL DEFAULT 0,
+    "dayPnlBtc" DECIMAL(18,8) NOT NULL DEFAULT 0,
+    "updatedAt" TIMESTAMP(3) NOT NULL,
+
+    CONSTRAINT "arbitrage_states_pkey" PRIMARY KEY ("tenantId")
+);
+
+-- CreateTable
 CREATE TABLE "idempotency_keys" (
     "tenantId" TEXT NOT NULL,
     "key" TEXT NOT NULL,
@@ -610,6 +696,15 @@ CREATE INDEX "audit_logs_action_idx" ON "audit_logs"("action");
 -- CreateIndex
 CREATE INDEX "ai_insights_tenantId_severity_idx" ON "ai_insights"("tenantId", "severity");
 
+-- CreateIndex
+CREATE INDEX "hashpower_orders_tenantId_status_createdAt_idx" ON "hashpower_orders"("tenantId", "status", "createdAt");
+
+-- CreateIndex
+CREATE INDEX "decision_snapshots_tenantId_at_idx" ON "decision_snapshots"("tenantId", "at");
+
+-- CreateIndex
+CREATE INDEX "market_samples_at_idx" ON "market_samples"("at");
+
 -- AddForeignKey
 ALTER TABLE "tenant_domains" ADD CONSTRAINT "tenant_domains_tenantId_fkey" FOREIGN KEY ("tenantId") REFERENCES "tenants"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
@@ -663,4 +758,14 @@ ALTER TABLE "notifications" ADD CONSTRAINT "notifications_userId_fkey" FOREIGN K
 
 -- AddForeignKey
 ALTER TABLE "support_tickets" ADD CONSTRAINT "support_tickets_userId_fkey" FOREIGN KEY ("userId") REFERENCES "users"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+┌─────────────────────────────────────────────────────────┐
+│  Update available 6.19.3 -> 7.9.1                       │
+│                                                         │
+│  This is a major update - please follow the guide at    │
+│  https://pris.ly/d/major-version-upgrade                │
+│                                                         │
+│  Run the following to update                            │
+│    npm i --save-dev prisma@latest                       │
+│    npm i @prisma/client@latest                          │
+└─────────────────────────────────────────────────────────┘
 

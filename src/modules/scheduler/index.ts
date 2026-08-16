@@ -32,7 +32,8 @@ export type JobKind =
   | "provider-health"
   | "reconciliation"
   | "ledger-verification"
-  | "tx-verification";
+  | "tx-verification"
+  | "arbitrage-scan";
 
 /** 各ジョブの推奨実行間隔（scheduler 設定の指針） */
 export const JOB_INTERVALS: Record<JobKind, number> = {
@@ -43,6 +44,8 @@ export const JOB_INTERVALS: Record<JobKind, number> = {
   reconciliation: 30 * 60_000, // 30分
   "ledger-verification": 24 * 3600_000, // 日次
   "tx-verification": 15 * 60_000, // 15分
+  // NiceHash Rate Limit を考慮し既定 60s（ARBITRAGE_SCAN_INTERVAL_SEC で変更可）
+  "arbitrage-scan": 60_000,
 };
 
 export type JobResult = {
@@ -114,6 +117,15 @@ async function executeJob(jobKind: JobKind, tenantId: string): Promise<string> {
     case "tx-verification": {
       const r = await verifyPendingPayouts(tenantId);
       return `verified=${r.verified} mismatched=${r.mismatched} pending=${r.pending}`;
+    }
+    case "arbitrage-scan": {
+      const { runOpportunityScan } = await import("@/modules/arbitrage/scanner");
+      const r = await runOpportunityScan(tenantId);
+      return `action=${r.decision.action} margin=${
+        r.profitability.expectedMarginRate !== null
+          ? (r.profitability.expectedMarginRate * 100).toFixed(1) + "%"
+          : "n/a"
+      } mode=${r.dataMode}${r.paperAction ? ` / ${r.paperAction}` : ""}`;
     }
     default: {
       const never: never = jobKind;

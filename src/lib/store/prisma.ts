@@ -15,7 +15,11 @@ import type { Store } from "./types";
 import type {
   AiInsight,
   Alert,
+  ArbitrageState,
   AuditLog,
+  DecisionSnapshot,
+  HashpowerOrder,
+  MarketSample,
   DeadLetterJob,
   ProviderCertification,
   Contract,
@@ -45,6 +49,7 @@ import type {
 } from "@/types";
 import { fromSat, toSat } from "@/lib/decimal";
 import { config } from "@/lib/config";
+import { defaultArbitrageState } from "./memory";
 
 // HMR で接続が増え続けないように globalThis に保持する
 const g = globalThis as unknown as { __btcPrisma?: PrismaClient };
@@ -1316,6 +1321,198 @@ export async function createPrismaStore(): Promise<Store> {
       await prisma.syncLock.deleteMany({ where: { key, holder } });
     },
 
+    // --- Hashpower Arbitrage -----------------------------------------------
+    async upsertHashpowerOrder(order) {
+      const data = {
+        tenantId: order.tenantId,
+        mode: order.mode,
+        externalOrderId: order.externalOrderId,
+        algorithm: order.algorithm,
+        market: order.market,
+        poolId: order.poolId,
+        status: order.status,
+        priceBtcPerFactorDay: order.priceBtcPerFactorDay,
+        requestedThs: order.requestedThs,
+        deliveredThs: order.deliveredThs,
+        amountBtc: order.amountBtc,
+        spentBtc: order.spentBtc,
+        minedBtc: order.minedBtc,
+        startedAt: order.startedAt ? new Date(order.startedAt) : null,
+        stoppedAt: order.stoppedAt ? new Date(order.stoppedAt) : null,
+        decisionSnapshotId: order.decisionSnapshotId,
+        reason: order.reason,
+      };
+      await prisma.hashpowerOrder.upsert({
+        where: { id: order.id },
+        create: { id: order.id, ...data, createdAt: new Date(order.createdAt) },
+        update: data,
+      });
+      return order;
+    },
+    async getHashpowerOrder(tenantId, id) {
+      const r = await prisma.hashpowerOrder.findFirst({ where: { id, tenantId } });
+      return r ? mapHashpowerOrder(r) : null;
+    },
+    async listHashpowerOrders(tenantId, filter) {
+      return (
+        await prisma.hashpowerOrder.findMany({
+          where: {
+            tenantId,
+            ...(filter?.status ? { status: filter.status } : {}),
+            ...(filter?.activeOnly
+              ? { status: { in: ["SUBMITTED", "ACTIVE", "PARTIALLY_FILLED"] } }
+              : {}),
+          },
+          orderBy: { createdAt: "desc" },
+          take: filter?.limit ?? 200,
+        })
+      ).map(mapHashpowerOrder);
+    },
+
+    async insertDecisionSnapshot(s) {
+      await prisma.decisionSnapshot.create({
+        data: {
+          id: s.id,
+          tenantId: s.tenantId,
+          at: new Date(s.at),
+          inputs: s.inputs as unknown as object,
+          outputs: s.outputs as unknown as object,
+          action: s.action,
+          reasons: s.reasons,
+          confidence: s.confidence,
+          recommendedThs: s.recommendedThs,
+          maxSpendBtc: s.maxSpendBtc,
+        },
+      });
+    },
+    async listDecisionSnapshots(tenantId, limit = 100) {
+      return (
+        await prisma.decisionSnapshot.findMany({
+          where: { tenantId },
+          orderBy: { at: "desc" },
+          take: limit,
+        })
+      ).map(
+        (r): DecisionSnapshot => ({
+          id: r.id,
+          tenantId: r.tenantId,
+          at: isoReq(r.at),
+          inputs: jsonObject(r.inputs) as DecisionSnapshot["inputs"],
+          outputs: jsonObject(r.outputs) as DecisionSnapshot["outputs"],
+          action: r.action as DecisionSnapshot["action"],
+          reasons: jsonArray<string>(r.reasons),
+          confidence: num(r.confidence),
+          recommendedThs: num(r.recommendedThs),
+          maxSpendBtc: btc(r.maxSpendBtc),
+        }),
+      );
+    },
+
+    async insertMarketSample(s) {
+      try {
+        await prisma.marketSample.create({
+          data: {
+            id: s.id,
+            at: new Date(s.at),
+            btcPriceUsd: s.btcPriceUsd,
+            usdJpy: s.usdJpy,
+            difficulty: s.difficulty,
+            networkHashrateThs: s.networkHashrateThs,
+            blockSubsidyBtc: s.blockSubsidyBtc,
+            avgTxFeesBtcPerBlock: s.avgTxFeesBtcPerBlock,
+            nicehashPriceBtcPerFactorDay: s.nicehashPriceBtcPerFactorDay,
+            nicehashAvailableFactor: s.nicehashAvailableFactor,
+            poolEfficiency: s.poolEfficiency,
+            sourceMode: s.sourceMode,
+          },
+        });
+        return true;
+      } catch (err) {
+        if (isUniqueViolation(err)) return false;
+        throw err;
+      }
+    },
+    async listMarketSamples(fromMs, limit = 50_000) {
+      return (
+        await prisma.marketSample.findMany({
+          where: fromMs ? { at: { gte: new Date(fromMs) } } : undefined,
+          orderBy: { at: "asc" },
+          take: limit,
+        })
+      ).map(
+        (r): MarketSample => ({
+          id: r.id,
+          at: isoReq(r.at),
+          btcPriceUsd: r.btcPriceUsd,
+          usdJpy: r.usdJpy,
+          difficulty: r.difficulty,
+          networkHashrateThs: r.networkHashrateThs,
+          blockSubsidyBtc: r.blockSubsidyBtc,
+          avgTxFeesBtcPerBlock: r.avgTxFeesBtcPerBlock,
+          nicehashPriceBtcPerFactorDay: r.nicehashPriceBtcPerFactorDay,
+          nicehashAvailableFactor: r.nicehashAvailableFactor,
+          poolEfficiency: r.poolEfficiency,
+          sourceMode: r.sourceMode as MarketSample["sourceMode"],
+        }),
+      );
+    },
+
+    async getArbitrageState(tenantId) {
+      const r = await prisma.arbitrageState.findUnique({ where: { tenantId } });
+      if (r) return mapArbitrageState(r);
+      const def = defaultArbitrageState(tenantId);
+      await prisma.arbitrageState.create({
+        data: {
+          tenantId,
+          enabled: def.enabled,
+          safetyMarginRate: def.safetyMarginRate,
+          startMarginRate: def.startMarginRate,
+          stopMarginRate: def.stopMarginRate,
+          minRuntimeSec: def.minRuntimeSec,
+          maxRuntimeSec: def.maxRuntimeSec,
+          maxOrderBtc: def.maxOrderBtc,
+          maxDailySpendBtc: def.maxDailySpendBtc,
+          maxDailyLossBtc: def.maxDailyLossBtc,
+          maxConcurrentOrders: def.maxConcurrentOrders,
+          maxHashrateThs: def.maxHashrateThs,
+          maxDrawdownRate: def.maxDrawdownRate,
+          performanceFeeRate: def.performanceFeeRate,
+          highWaterMarkBtc: def.highWaterMarkBtc,
+          forecastErrorEma: def.forecastErrorEma,
+          dayKey: def.dayKey,
+          daySpentBtc: def.daySpentBtc,
+          dayPnlBtc: def.dayPnlBtc,
+        },
+      });
+      return def;
+    },
+    async updateArbitrageState(tenantId, patch) {
+      const r = await prisma.arbitrageState.update({
+        where: { tenantId },
+        data: {
+          ...(patch.enabled !== undefined && { enabled: patch.enabled }),
+          ...(patch.safetyMarginRate !== undefined && { safetyMarginRate: patch.safetyMarginRate }),
+          ...(patch.startMarginRate !== undefined && { startMarginRate: patch.startMarginRate }),
+          ...(patch.stopMarginRate !== undefined && { stopMarginRate: patch.stopMarginRate }),
+          ...(patch.minRuntimeSec !== undefined && { minRuntimeSec: patch.minRuntimeSec }),
+          ...(patch.maxRuntimeSec !== undefined && { maxRuntimeSec: patch.maxRuntimeSec }),
+          ...(patch.maxOrderBtc !== undefined && { maxOrderBtc: patch.maxOrderBtc }),
+          ...(patch.maxDailySpendBtc !== undefined && { maxDailySpendBtc: patch.maxDailySpendBtc }),
+          ...(patch.maxDailyLossBtc !== undefined && { maxDailyLossBtc: patch.maxDailyLossBtc }),
+          ...(patch.maxConcurrentOrders !== undefined && { maxConcurrentOrders: patch.maxConcurrentOrders }),
+          ...(patch.maxHashrateThs !== undefined && { maxHashrateThs: patch.maxHashrateThs }),
+          ...(patch.maxDrawdownRate !== undefined && { maxDrawdownRate: patch.maxDrawdownRate }),
+          ...(patch.performanceFeeRate !== undefined && { performanceFeeRate: patch.performanceFeeRate }),
+          ...(patch.highWaterMarkBtc !== undefined && { highWaterMarkBtc: patch.highWaterMarkBtc }),
+          ...(patch.forecastErrorEma !== undefined && { forecastErrorEma: patch.forecastErrorEma }),
+          ...(patch.dayKey !== undefined && { dayKey: patch.dayKey }),
+          ...(patch.daySpentBtc !== undefined && { daySpentBtc: patch.daySpentBtc }),
+          ...(patch.dayPnlBtc !== undefined && { dayPnlBtc: patch.dayPnlBtc }),
+        },
+      });
+      return mapArbitrageState(r);
+    },
+
     // --- Provider Certification --------------------------------------------
     async insertCertification(cert) {
       await prisma.providerCertification.create({
@@ -1626,6 +1823,56 @@ function mapAccount(r: any): WalletAccount {
     tenantId: r.tenantId,
     userId: r.userId,
     createdAt: isoReq(r.createdAt),
+  };
+}
+
+function mapHashpowerOrder(r: any): HashpowerOrder {
+  return {
+    id: r.id,
+    tenantId: r.tenantId,
+    mode: r.mode,
+    externalOrderId: r.externalOrderId,
+    algorithm: r.algorithm,
+    market: r.market,
+    poolId: r.poolId,
+    status: r.status,
+    priceBtcPerFactorDay: num(r.priceBtcPerFactorDay),
+    requestedThs: num(r.requestedThs),
+    deliveredThs: numOrNull(r.deliveredThs),
+    amountBtc: btc(r.amountBtc),
+    spentBtc: btc(r.spentBtc),
+    minedBtc: btc(r.minedBtc),
+    startedAt: iso(r.startedAt),
+    stoppedAt: iso(r.stoppedAt),
+    decisionSnapshotId: r.decisionSnapshotId,
+    reason: r.reason,
+    createdAt: isoReq(r.createdAt),
+    updatedAt: isoReq(r.updatedAt),
+  };
+}
+
+function mapArbitrageState(r: any): ArbitrageState {
+  return {
+    tenantId: r.tenantId,
+    enabled: r.enabled,
+    safetyMarginRate: r.safetyMarginRate,
+    startMarginRate: r.startMarginRate,
+    stopMarginRate: r.stopMarginRate,
+    minRuntimeSec: r.minRuntimeSec,
+    maxRuntimeSec: r.maxRuntimeSec,
+    maxOrderBtc: btc(r.maxOrderBtc),
+    maxDailySpendBtc: btc(r.maxDailySpendBtc),
+    maxDailyLossBtc: btc(r.maxDailyLossBtc),
+    maxConcurrentOrders: r.maxConcurrentOrders,
+    maxHashrateThs: num(r.maxHashrateThs),
+    maxDrawdownRate: r.maxDrawdownRate,
+    performanceFeeRate: r.performanceFeeRate,
+    highWaterMarkBtc: btc(r.highWaterMarkBtc),
+    forecastErrorEma: r.forecastErrorEma,
+    dayKey: r.dayKey,
+    daySpentBtc: btc(r.daySpentBtc),
+    dayPnlBtc: btc(r.dayPnlBtc),
+    updatedAt: isoReq(r.updatedAt),
   };
 }
 

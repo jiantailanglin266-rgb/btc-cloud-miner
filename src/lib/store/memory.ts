@@ -42,7 +42,14 @@ import { hashPassword, newId } from "@/lib/crypto";
 import { config } from "@/lib/config";
 import { addBtc } from "@/lib/decimal";
 import { demoAddress } from "@/modules/wallet/address";
-import type { DeadLetterJob, ProviderCertification } from "@/types";
+import type {
+  ArbitrageState,
+  DeadLetterJob,
+  DecisionSnapshot,
+  HashpowerOrder,
+  MarketSample,
+  ProviderCertification,
+} from "@/types";
 
 // ---------------------------------------------------------------------------
 // 決定的 PRNG
@@ -91,6 +98,10 @@ type Db = {
   locks: Map<string, SyncLock>;
   certifications: ProviderCertification[];
   deadLetters: DeadLetterJob[];
+  hashpowerOrders: HashpowerOrder[];
+  decisionSnapshots: DecisionSnapshot[];
+  marketSamples: MarketSample[];
+  arbitrageStates: Map<string, ArbitrageState>;
 };
 
 const DEFAULT_TENANT_ID = "tenant-default";
@@ -105,6 +116,32 @@ export const DEMO_ACCOUNTS = {
 
 function iso(ms: number): string {
   return new Date(ms).toISOString();
+}
+
+/** ArbitrageState の既定値（config の保守的な初期値から生成） */
+export function defaultArbitrageState(tenantId: string): ArbitrageState {
+  return {
+    tenantId,
+    enabled: false, // 明示的に有効化するまでスキャンのみ（注文しない）
+    safetyMarginRate: config.arbitrage.safetyMarginRate,
+    startMarginRate: config.arbitrage.startMarginRate,
+    stopMarginRate: config.arbitrage.stopMarginRate,
+    minRuntimeSec: config.arbitrage.minRuntimeSec,
+    maxRuntimeSec: config.arbitrage.maxRuntimeSec,
+    maxOrderBtc: config.arbitrage.maxOrderBtc,
+    maxDailySpendBtc: config.arbitrage.maxDailySpendBtc,
+    maxDailyLossBtc: config.arbitrage.maxDailyLossBtc,
+    maxConcurrentOrders: config.arbitrage.maxConcurrentOrders,
+    maxHashrateThs: config.arbitrage.maxHashrateThs,
+    maxDrawdownRate: config.arbitrage.maxDrawdownRate,
+    performanceFeeRate: config.arbitrage.performanceFeeRate,
+    highWaterMarkBtc: "0.00000000",
+    forecastErrorEma: 0.1, // 初期は控えめな不確実性を仮定
+    dayKey: new Date().toISOString().slice(0, 10),
+    daySpentBtc: "0.00000000",
+    dayPnlBtc: "0.00000000",
+    updatedAt: new Date().toISOString(),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -154,6 +191,8 @@ function emptyDb(): Db {
     tickets: [], incidents: [], auditLogs: [], insights: [], payouts: [],
     alerts: [], rawSnapshots: [], locks: new Map(),
     certifications: [], deadLetters: [],
+    hashpowerOrders: [], decisionSnapshots: [], marketSamples: [],
+    arbitrageStates: new Map(),
   };
 }
 
@@ -194,6 +233,10 @@ function buildSeed(): Db {
     locks: new Map(),
     certifications: [],
     deadLetters: [],
+    hashpowerOrders: [],
+    decisionSnapshots: [],
+    marketSamples: [],
+    arbitrageStates: new Map(),
   };
 
   // --- テナント ------------------------------------------------------------
@@ -1277,6 +1320,79 @@ export const memoryStore: Store = {
   async releaseLock(key, holder) {
     const existing = db.locks.get(key);
     if (existing && existing.holder === holder) db.locks.delete(key);
+  },
+
+  // --- Hashpower Arbitrage --------------------------------------------------
+  async upsertHashpowerOrder(order) {
+    const i = db.hashpowerOrders.findIndex(
+      (o) => o.tenantId === order.tenantId && o.id === order.id,
+    );
+    if (i === -1) db.hashpowerOrders.push(order);
+    else db.hashpowerOrders[i] = order;
+    return clone(order);
+  },
+  async getHashpowerOrder(tenantId, id) {
+    return clone(
+      db.hashpowerOrders.find((o) => o.tenantId === tenantId && o.id === id) ?? null,
+    );
+  },
+  async listHashpowerOrders(tenantId, filter) {
+    let list = db.hashpowerOrders.filter((o) => o.tenantId === tenantId);
+    if (filter?.status) list = list.filter((o) => o.status === filter.status);
+    if (filter?.activeOnly) {
+      list = list.filter((o) =>
+        ["SUBMITTED", "ACTIVE", "PARTIALLY_FILLED"].includes(o.status),
+      );
+    }
+    list = [...list].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    return clone(filter?.limit ? list.slice(0, filter.limit) : list);
+  },
+
+  async insertDecisionSnapshot(snapshot) {
+    db.decisionSnapshots.push(snapshot);
+    if (db.decisionSnapshots.length > 3000) {
+      db.decisionSnapshots.splice(0, db.decisionSnapshots.length - 3000);
+    }
+  },
+  async listDecisionSnapshots(tenantId, limit = 100) {
+    return clone(
+      db.decisionSnapshots
+        .filter((s) => s.tenantId === tenantId)
+        .sort((a, b) => b.at.localeCompare(a.at))
+        .slice(0, limit),
+    );
+  },
+
+  async insertMarketSample(sample) {
+    if (db.marketSamples.some((s) => s.id === sample.id)) return false;
+    db.marketSamples.push(sample);
+    // 1年分（分単位なら多すぎるので上限 100k 件）
+    if (db.marketSamples.length > 100_000) {
+      db.marketSamples.splice(0, db.marketSamples.length - 100_000);
+    }
+    return true;
+  },
+  async listMarketSamples(fromMs, limit = 50_000) {
+    let list = db.marketSamples;
+    if (fromMs) list = list.filter((s) => new Date(s.at).getTime() >= fromMs);
+    return clone(
+      [...list].sort((a, b) => a.at.localeCompare(b.at)).slice(0, limit),
+    );
+  },
+
+  async getArbitrageState(tenantId) {
+    let s = db.arbitrageStates.get(tenantId);
+    if (!s) {
+      s = defaultArbitrageState(tenantId);
+      db.arbitrageStates.set(tenantId, s);
+    }
+    return clone(s);
+  },
+  async updateArbitrageState(tenantId, patch) {
+    const cur = db.arbitrageStates.get(tenantId) ?? defaultArbitrageState(tenantId);
+    const next = { ...cur, ...patch, tenantId, updatedAt: new Date().toISOString() };
+    db.arbitrageStates.set(tenantId, next);
+    return clone(next);
   },
 
   // --- Provider Certification ----------------------------------------------

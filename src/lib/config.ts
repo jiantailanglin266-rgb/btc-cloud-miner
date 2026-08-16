@@ -99,6 +99,51 @@ export const config = {
    */
   pilotMode: bool("PILOT_MODE", false),
 
+  nicehash: {
+    /** mock | paper | live。既定 mock（ネットワーク接続なし）。paper=実市場データ・仮想注文 */
+    mode: str("NICEHASH_MODE", "mock"),
+    apiBase: process.env.NICEHASH_API_BASE || null,
+    // 資格情報は Secrets Manager が環境変数として注入する。DB・Git に置かない。
+    // 権限は Hashpower 注文(View/Create/Manage)のみ。★Withdrawal 権限は付与しない
+    apiKey: process.env.NICEHASH_API_KEY || null,
+    apiSecret: process.env.NICEHASH_API_SECRET || null,
+    organizationId: process.env.NICEHASH_ORG_ID || null,
+    /**
+     * ★ Kill Switch（フェーズ18）: false の間は live モードでも実注文 API を一切呼ばない。
+     * 既定 false。Paper/Backtest で十分検証されるまで有効化しないこと。
+     */
+    tradingEnabled: bool("FEATURE_NICEHASH_TRADING_ENABLED", false),
+    /** マーケット手数料率。API から取得できない場合のフォールバック（要・実測確認） */
+    marketFeeRate: num("NICEHASH_MARKET_FEE_RATE", 0.03),
+    /** 新規注文の固定手数料 BTC（同上） */
+    orderFeeBtc: num("NICEHASH_ORDER_FEE_BTC", 0.0001),
+    /** Opportunity Scanner の間隔（秒）。Rate Limit を考慮して既定 60s */
+    scanIntervalSec: num("ARBITRAGE_SCAN_INTERVAL_SEC", 60),
+  },
+
+  arbitrage: {
+    /** 安全マージン初期値（保守的に 10%） */
+    safetyMarginRate: num("ARBITRAGE_SAFETY_MARGIN", 0.10),
+    /** Hysteresis: 開始・停止のマージン閾値を分ける */
+    startMarginRate: num("ARBITRAGE_START_MARGIN", 0.08),
+    stopMarginRate: num("ARBITRAGE_STOP_MARGIN", 0.03),
+    minConfidence: num("ARBITRAGE_MIN_CONFIDENCE", 0.6),
+    minRuntimeSec: num("ARBITRAGE_MIN_RUNTIME_SEC", 300),
+    maxRuntimeSec: num("ARBITRAGE_MAX_RUNTIME_SEC", 1800),
+    /** リスク上限（フェーズ17） */
+    maxOrderBtc: str("ARBITRAGE_MAX_ORDER_BTC", "0.005"),
+    maxDailySpendBtc: str("ARBITRAGE_MAX_DAILY_SPEND_BTC", "0.02"),
+    maxDailyLossBtc: str("ARBITRAGE_MAX_DAILY_LOSS_BTC", "0.005"),
+    maxConcurrentOrders: num("ARBITRAGE_MAX_CONCURRENT_ORDERS", 2),
+    maxHashrateThs: num("ARBITRAGE_MAX_HASHRATE_THS", 2000),
+    maxDrawdownRate: num("ARBITRAGE_MAX_DRAWDOWN_PERCENT", 20) / 100,
+    /** 成功報酬率（実現純益のみ・HWM 併用） */
+    performanceFeeRate: num("ARBITRAGE_PERFORMANCE_FEE_RATE", 0.2),
+    /** データ鮮度の許容（秒）。超えたら注文しない */
+    maxDataAgeSec: num("ARBITRAGE_MAX_DATA_AGE_SEC", 180),
+    usdJpyFallback: num("ARBITRAGE_USDJPY", 152),
+  },
+
   adminIpAllowlist: (process.env.ADMIN_IP_ALLOWLIST || "")
     .split(",")
     .map((s) => s.trim())

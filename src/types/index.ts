@@ -843,6 +843,185 @@ export type AiInsight = {
 };
 
 // ---------------------------------------------------------------------------
+// Hashpower Marketplace（NiceHash 等）
+// ---------------------------------------------------------------------------
+
+/** マーケットプレイスの動作モード。live は実注文を作成する（既定は mock） */
+export type HashpowerMode = "mock" | "paper" | "live";
+
+export type HashpowerMarket = "EU" | "USA" | "EU_N" | "USA_E" | "SA" | "ASIA";
+
+/** アルゴリズム設定（NiceHash /main/api/v2/mining/algorithms 由来） */
+export type HashpowerAlgoSettings = {
+  algorithm: string;
+  /** 価格・limit の基準ハッシュ数（例 PH = 1e15 H/s） */
+  marketFactor: number;
+  displayMarketFactor: string;
+  minSpeedLimit: number;
+  minPriceBtc: number;
+  /** 新規注文時の固定手数料（BTC） */
+  orderFeeBtc: number;
+  /** 消費額に対するマーケット手数料率（例 0.03 = 3%） */
+  marketFeeRate: number;
+  source: string;
+  fetchedAt: ISODateString;
+};
+
+export type OrderbookLevel = {
+  /** BTC / marketFactor / day */
+  priceBtcPerFactorDay: number;
+  /** この価格帯の速度（marketFactor 単位/s） */
+  speedFactor: number;
+  market: HashpowerMarket;
+};
+
+export type HashpowerOrderbook = {
+  algorithm: string;
+  levels: OrderbookLevel[];
+  /** 現在の実効価格（アクティブ注文が付いている最低価格帯） */
+  currentPriceBtcPerFactorDay: number | null;
+  totalAvailableSpeedFactor: number;
+  marketFactor: number;
+  source: string;
+  sourceMode: SourceMode;
+  fetchedAt: ISODateString;
+};
+
+export type HashpowerOrderStatus =
+  | "PLANNED"
+  | "SUBMITTED"
+  | "ACTIVE"
+  | "PARTIALLY_FILLED"
+  | "STOPPING"
+  | "CANCELLED"
+  | "COMPLETED"
+  | "FAILED";
+
+/** ハッシュパワー注文（paper / live 共通。mode で区別） */
+export type HashpowerOrder = {
+  id: string;
+  tenantId: string;
+  mode: HashpowerMode;
+  /** live のときのみ: NiceHash 側の注文 ID */
+  externalOrderId: string | null;
+  algorithm: string;
+  market: HashpowerMarket;
+  poolId: string | null;
+  status: HashpowerOrderStatus;
+  /** 発注価格（BTC/factor/day） */
+  priceBtcPerFactorDay: number;
+  /** 要求ハッシュレート */
+  requestedThs: number;
+  /** 実際に届いたハッシュレート（stats から更新） */
+  deliveredThs: number | null;
+  /** 予算（satoshi 相当の BTC 文字列） */
+  amountBtc: BtcAmount;
+  /** 消費済み（コスト） */
+  spentBtc: BtcAmount;
+  /** この注文期間中に採掘できたと推定/実測される BTC */
+  minedBtc: BtcAmount;
+  startedAt: ISODateString | null;
+  stoppedAt: ISODateString | null;
+  /** 決定時のスナップショット ID（説明可能性） */
+  decisionSnapshotId: string | null;
+  reason: string;
+  createdAt: ISODateString;
+  updatedAt: ISODateString;
+};
+
+// ---------------------------------------------------------------------------
+// Arbitrage（収益性判定）
+// ---------------------------------------------------------------------------
+
+export type ArbitrageAction = "BUY" | "HOLD" | "STOP" | "WAIT";
+
+/** 判定の入力と結果を丸ごと保存する（「なぜ注文した/しなかった」の説明可能性） */
+export type DecisionSnapshot = {
+  id: string;
+  tenantId: string;
+  at: ISODateString;
+  /** 入力値（すべて数値・出所付きで保存） */
+  inputs: {
+    btcPriceUsd: number;
+    usdJpy: number;
+    difficulty: number;
+    networkHashrateThs: number;
+    blockSubsidyBtc: number;
+    avgTxFeesBtcPerBlock: number;
+    poolFeeRate: number;
+    expectedPoolEfficiency: number;
+    expectedRejectRate: number;
+    nicehashPriceBtcPerFactorDay: number | null;
+    nicehashMarketFeeRate: number;
+    nicehashOrderFeeBtc: number;
+    marketFactor: number;
+    safetyMarginRate: number;
+    dataMode: SourceMode;
+  };
+  /** 計算結果 */
+  outputs: {
+    expectedRevenueBtcPerThDay: number;
+    costBtcPerThDay: number | null;
+    spreadBtcPerThDay: number | null;
+    expectedMarginRate: number | null;
+    breakEvenPriceBtcPerFactorDay: number;
+    maxBidPriceBtcPerFactorDay: number;
+    spreadUsdPerHourAt1Ph: number | null;
+    spreadJpyPerHourAt1Ph: number | null;
+  };
+  action: ArbitrageAction;
+  reasons: string[];
+  confidence: number;
+  recommendedThs: number;
+  maxSpendBtc: BtcAmount;
+};
+
+/** テナントごとのアービトラージ設定・状態（HWM・日次カウンタ・予測誤差） */
+export type ArbitrageState = {
+  tenantId: string;
+  enabled: boolean;
+  /** 安全マージン（0.10 = 10%）。adaptive で自動調整され得る */
+  safetyMarginRate: number;
+  startMarginRate: number;
+  stopMarginRate: number;
+  minRuntimeSec: number;
+  maxRuntimeSec: number;
+  maxOrderBtc: BtcAmount;
+  maxDailySpendBtc: BtcAmount;
+  maxDailyLossBtc: BtcAmount;
+  maxConcurrentOrders: number;
+  maxHashrateThs: number;
+  maxDrawdownRate: number;
+  /** 実現損益に対する成功報酬率 */
+  performanceFeeRate: number;
+  /** High-Water Mark（累積実現純益のピーク・BTC） */
+  highWaterMarkBtc: BtcAmount;
+  /** 予測誤差の指数移動平均（|expected-actual|/expected） */
+  forecastErrorEma: number;
+  /** 日次カウンタ（dayKey が変わったらリセット） */
+  dayKey: string;
+  daySpentBtc: BtcAmount;
+  dayPnlBtc: BtcAmount;
+  updatedAt: ISODateString;
+};
+
+/** バックテスト・履歴用の市場サンプル */
+export type MarketSample = {
+  id: string;
+  at: ISODateString;
+  btcPriceUsd: number;
+  usdJpy: number;
+  difficulty: number;
+  networkHashrateThs: number;
+  blockSubsidyBtc: number;
+  avgTxFeesBtcPerBlock: number;
+  nicehashPriceBtcPerFactorDay: number;
+  nicehashAvailableFactor: number;
+  poolEfficiency: number;
+  sourceMode: SourceMode;
+};
+
+// ---------------------------------------------------------------------------
 // ダッシュボード集約
 // ---------------------------------------------------------------------------
 

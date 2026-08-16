@@ -13,6 +13,10 @@
 import type {
   AiInsight,
   Alert,
+  ArbitrageState,
+  DecisionSnapshot,
+  HashpowerOrder,
+  MarketSample,
   DeadLetterJob,
   ProviderCertification,
   AuditLog,
@@ -188,6 +192,28 @@ export type Store = {
   /** 取得できたら true。他者が有効なロックを保持中なら false */
   acquireLock(key: string, holder: string, ttlMs: number): Promise<boolean>;
   releaseLock(key: string, holder: string): Promise<void>;
+
+  // --- Hashpower Arbitrage --------------------------------------------------
+  upsertHashpowerOrder(order: HashpowerOrder): Promise<HashpowerOrder>;
+  getHashpowerOrder(tenantId: string, id: string): Promise<HashpowerOrder | null>;
+  listHashpowerOrders(
+    tenantId: string,
+    filter?: { status?: HashpowerOrder["status"]; activeOnly?: boolean; limit?: number },
+  ): Promise<HashpowerOrder[]>;
+
+  insertDecisionSnapshot(snapshot: DecisionSnapshot): Promise<void>;
+  listDecisionSnapshots(tenantId: string, limit?: number): Promise<DecisionSnapshot[]>;
+
+  /** id 重複は無視（冪等）。サンプルはテナント共通の市場データ */
+  insertMarketSample(sample: MarketSample): Promise<boolean>;
+  listMarketSamples(fromMs?: number, limit?: number): Promise<MarketSample[]>;
+
+  /** 無ければ既定値で作成して返す */
+  getArbitrageState(tenantId: string): Promise<ArbitrageState>;
+  updateArbitrageState(
+    tenantId: string,
+    patch: Partial<ArbitrageState>,
+  ): Promise<ArbitrageState>;
 
   // --- Provider Certification（実疎通の証明記録） ---------------------------
   insertCertification(cert: ProviderCertification): Promise<void>;
