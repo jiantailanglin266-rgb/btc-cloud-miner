@@ -87,6 +87,7 @@ Browser ── HTTPS/SSE ──▶ Next.js 16 (App Router)
 | [WITHDRAWAL.md](./WITHDRAWAL.md) | 出金 3 モード（mock/sandbox/live）と防御 11 層 |
 | [DEPLOYMENT.md](./DEPLOYMENT.md) | デプロイ手順（Docker / クラウド / 環境変数チェックリスト） |
 | [FREE_TIER_DEPLOYMENT.md](./FREE_TIER_DEPLOYMENT.md) | 固定費ほぼ0円の PoC 環境と商用環境の分離 |
+| [PAPER_OPERATION.md](./PAPER_OPERATION.md) | **Paper 実運用ランブック**（実市場データ 24/7 蓄積。API キー不要・資金リスクゼロ） |
 | [PRODUCTION_CHECKLIST.md](./PRODUCTION_CHECKLIST.md) | 本番公開前チェックリスト |
 | [OPERATIONS.md](./OPERATIONS.md) | 運用手順・障害対応ランブック |
 | [docs/](./docs/) | ER図・画面設計・ロードマップ・外部依存・コスト・法規制・マニュアル類 |

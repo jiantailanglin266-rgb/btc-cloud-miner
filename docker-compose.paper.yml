@@ -1,0 +1,84 @@
+# Paper 実運用構成 — 実 NiceHash 公開 API + 実 Bitcoin データで 24/7 スキャン
+#
+#   cp .env.paper.example .env.paper   # 値を埋める（ENCRYPTION_KEY 等）
+#   docker compose -f docker-compose.paper.yml up -d --build
+#   docker compose -f docker-compose.paper.yml run --rm worker npx prisma migrate deploy
+#   docker compose -f docker-compose.paper.yml run --rm worker npx tsx scripts/bootstrap.ts
+#
+# ★ API キー不要（公開エンドポイントのみ）。実注文は構造的に不可能
+#   （NICEHASH_MODE=paper では注文メソッド自体が拒否される）。
+# ★ 資金リスクゼロ。目的は 30 日以上の実データ蓄積と forecast error EMA の安定確認。
+# 詳細手順: PAPER_OPERATION.md
+
+services:
+  app:
+    build: .
+    ports:
+      - "3000:3000"
+    env_file: .env.paper
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgresql://bcm:bcm_local_password@db:5432/btc_cloud_miner?schema=public
+      REDIS_URL: redis://cache:6379
+      NICEHASH_MODE: paper
+      BITCOIN_SOURCE_PRIMARY: https://mempool.space/api
+      PRICE_SOURCE_PRIMARY: https://api.coingecko.com/api/v3
+      MINING_PROVIDER_MODE: mock
+      WALLET_PROVIDER_MODE: mock
+      FEATURE_WITHDRAWAL_ENABLED: "false"
+    depends_on:
+      db:
+        condition: service_healthy
+      cache:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # 背景ワーカー（arbitrage-scan 60s を含む全ジョブ）
+  # ★ ランナー像は standalone 最小構成で scripts/ を含まないため builder ステージを使う
+  worker:
+    build:
+      context: .
+      target: builder
+    command: ["npx", "tsx", "scripts/worker.ts"]
+    env_file: .env.paper
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgresql://bcm:bcm_local_password@db:5432/btc_cloud_miner?schema=public
+      REDIS_URL: redis://cache:6379
+      NICEHASH_MODE: paper
+      BITCOIN_SOURCE_PRIMARY: https://mempool.space/api
+      PRICE_SOURCE_PRIMARY: https://api.coingecko.com/api/v3
+      MINING_PROVIDER_MODE: mock
+      WALLET_PROVIDER_MODE: mock
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: bcm
+      POSTGRES_PASSWORD: bcm_local_password
+      POSTGRES_DB: btc_cloud_miner
+    volumes:
+      - pgdata_paper:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bcm -d btc_cloud_miner"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  cache:
+    image: redis:7-alpine
+    command: ["redis-server", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+volumes:
+  pgdata_paper:

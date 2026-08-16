@@ -17,6 +17,7 @@
     "prisma:migrate": "prisma migrate deploy",
     "prisma:seed": "tsx prisma/seed.ts",
     "worker": "tsx scripts/worker.ts",
+    "bootstrap": "tsx scripts/bootstrap.ts",
     "doctor": "tsx scripts/doctor.ts",
     "smoke:live": "tsx scripts/live-smoke.ts",
     "verify:f2pool": "tsx scripts/verify-f2pool.ts",

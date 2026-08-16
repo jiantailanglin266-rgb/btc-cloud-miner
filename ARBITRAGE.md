@@ -98,6 +98,9 @@ Secret はログ・例外・ヘッダダンプに出さない（テストで検�
 
 ## 7. 運用
 
+**24/7 paper 実運用の完全手順は [PAPER_OPERATION.md](./PAPER_OPERATION.md)**
+（`docker-compose.paper.yml` + `npm run bootstrap` で API キー不要・資金リスクゼロの実データ蓄積）。
+
 ```bash
 NICEHASH_MODE=paper npm run worker   # arbitrage-scan が60秒毎に実行される
 # Admin → Arbitrage: 信号機・数値・理由・履歴・Emergency Stop
