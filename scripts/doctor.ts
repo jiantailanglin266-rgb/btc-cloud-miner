@@ -127,6 +127,42 @@ async function run() {
     `同期間隔 ${config.mining.syncIntervalSec}s（npm run worker で起動）`,
   );
 
+  // 7.5 NiceHash Arbitrage
+  {
+    const mode = config.nicehash.mode;
+    const hasKeys = Boolean(
+      config.nicehash.apiKey && config.nicehash.apiSecret && config.nicehash.organizationId,
+    );
+    if (mode === "live") {
+      check(
+        "Arbitrage",
+        hasKeys ? "PASS" : "FAIL",
+        hasKeys
+          ? `live モード（Kill Switch: ${config.nicehash.tradingEnabled ? "有効=実注文可" : "無効"}）`
+          : "live モードだが NICEHASH_API_KEY/SECRET/ORG_ID が未設定",
+      );
+      if (config.nicehash.tradingEnabled) {
+        check(
+          "Arbitrage",
+          "WARN",
+          "実注文が有効です。ARBITRAGE.md §7 のチェックリスト（paper 30日・Backtest 検証）を完了済みか確認してください",
+        );
+      }
+    } else if (mode === "paper") {
+      check("Arbitrage", "PASS", "paper モード（実市場データ・仮想注文。推奨の検証段階）");
+    } else {
+      check("Arbitrage", "WARN", "mock モード（擬似市場。実データ検証には paper へ）");
+    }
+    // Kill Switch と mode の危険な組合せを検査
+    if (mode !== "live" && config.nicehash.tradingEnabled) {
+      check(
+        "Arbitrage",
+        "WARN",
+        "FEATURE_NICEHASH_TRADING_ENABLED=true だが mode が live でないため実注文は発生しません（設定の意図を確認）",
+      );
+    }
+  }
+
   // 8. Migration
   if (config.databaseUrl) {
     try {

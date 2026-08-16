@@ -93,6 +93,17 @@
 - [ ] **MANUAL** 基幹フロー実機確認: 登録→2FA→ダッシュボード→出金申請→承認
 - [ ] **MANUAL** モバイル幅・ダークで表示崩れなし
 
+## 6.5 Hashrate Arbitrage（NiceHash）
+
+- [x] **PASS** 実注文は mode=live + Kill Switch の二重ゲート内（既定は両方 OFF）
+- [x] **PASS** break-even 超の Bid・全資金投入・無制限注文が構造的に不可能（テスト固定）
+- [x] **PASS** 判定の説明可能性（DecisionSnapshot に入力・計算・理由を全保存）
+- [x] **PASS** Paper Trading・Backtest・Emergency Stop・リスク上限 6 種
+- [ ] **MANUAL** paper モードで 30 日以上運用し forecast error EMA の安定を確認
+- [ ] **MANUAL** 実サンプル（LIVE_API）での Backtest で Threshold/Dynamic の優位を確認
+- [ ] **MANUAL** NiceHash アカウント作成 + **注文権限のみ**の API キー発行（Withdrawal 権限は付与しない）
+- [ ] **MANUAL** live 切替後、最小注文で発注→停止→PnL 照合を 1 サイクル確認
+
 ## 7. LIVE 切替（フェーズ18・20）
 
 - [x] **PASS** `MINING_PROVIDER_MODE=live` で実プロバイダー未接続時に「LIVE CONNECTION FAILED」表示（無言 Mock フォールバックしない）

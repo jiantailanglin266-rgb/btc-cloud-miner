@@ -47,6 +47,7 @@ http://localhost:3000 を開き、以下のデモアカウントでログイン�
 | 管理コンソール | ユーザー/KYC・出金承認・プロバイダー・ワーカー・プラン・テナント設定・障害情報・監査ログ・稼働状況・AI インサイト |
 | マルチテナント | サブドメインでテナント解決。ロゴ・名称・カラー・手数料をテナント別に設定（ホワイトラベル対応） |
 | AI Optimizer | ルールベース + 統計（Zスコア・回帰）による異常検知・停止検知・劣化予測。全検知に根拠数値を添付 |
+| **Hashrate Arbitrage** | NiceHash SHA-256 の板 VWAP と期待採掘収益のスプレッドを 60 秒ごとに判定（BUY/HOLD/STOP/WAIT + Hysteresis）。実測 Pool 効率・実測ボラ・予測誤差の自己学習・板深さ判定。mock/paper/live 3 モードで実注文は二重 Kill Switch 内。Paper Trading・4 戦略 Backtest・Performance Fee(HWM) 付き |
 | セキュリティ | scrypt・TOTP 2FA・step-up 認証・CSRF・レート制限・監査ログ・RBAC・セキュリティヘッダ（詳細は SECURITY.md） |
 
 ## アーキテクチャ（概要）
@@ -77,6 +78,7 @@ Browser ── HTTPS/SSE ──▶ Next.js 16 (App Router)
 | [ARCHITECTURE.md](./ARCHITECTURE.md) | アーキテクチャ・データフロー・インフラ設計 |
 | [DATABASE.md](./DATABASE.md) | DB 設計（34テーブル・インデックス・RLS・マイグレーション運用） |
 | [API.md](./API.md) | API 設計（全エンドポイント・共通仕様・SSE） |
+| [ARBITRAGE.md](./ARBITRAGE.md) | **NiceHash Hashrate Arbitrage**（収益性判定・Paper/Backtest・リスク管理・live移行手順） |
 | [SECURITY.md](./SECURITY.md) | 脅威モデルと対策・出金セキュリティ・監査 |
 | [MINING_PROVIDER.md](./MINING_PROVIDER.md) | プロバイダー統合（接続モデル3種・実プールアダプタ・追加手順） |
 | [STRATUM.md](./STRATUM.md) | Stratum V1 実装・Backend Gateway・V2 拡張点 |
