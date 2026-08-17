@@ -229,9 +229,13 @@ export async function runOpportunityScan(tenantId: string): Promise<ScanResult> 
   }
 
   // --- 3. リスク状態 → Decision --------------------------------------------
-  const poolOnline = providerHealth.some(
+  // プール接続は「実際に hashpower を配信する」live の前提条件。
+  // paper/mock は実プールへ配信しない（仮想注文のみ）ため、プール未登録でも
+  // BUY シミュレーションを止めない。live では従来どおり必須。
+  const poolReachable = providerHealth.some(
     (h) => h.status === "ONLINE" || h.status === "DEGRADED",
   );
+  const poolOnline = config.nicehash.mode === "live" ? poolReachable : true;
   const cumulativePnl = state.dayPnlBtc; // 日次。累積は HWM とスナップショットで追跡
   const drawdownRate = computeDrawdown(state);
 
